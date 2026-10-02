@@ -33,6 +33,11 @@ internal enum SceneCallbacks
     TriggerEnter = 1 << 9,
     TriggerStay = 1 << 10,
     TriggerExit = 1 << 11,
+    CollisionBegin2D = 1 << 12,
+    CollisionEnd2D = 1 << 13,
+    TriggerEnter2D = 1 << 14,
+    TriggerStay2D = 1 << 15,
+    TriggerExit2D = 1 << 16,
 
     /// <summary>Everything the per-frame loops dispatch. A component with none of these is never registered.</summary>
     AnyFrame = Start | Update | LateUpdate | FixedUpdate | RenderCollect | DrawGizmos | OnGui,
@@ -82,11 +87,19 @@ internal sealed class SceneDispatcher
         if (Overrides(type, nameof(MonoBehaviour.DrawGizmos))) callbacks |= SceneCallbacks.DrawGizmos;
         if (Overrides(type, nameof(MonoBehaviour.OnGui))) callbacks |= SceneCallbacks.OnGui;
 
+#if PROWL_PHYSICS_3D
         if (Overrides(type, nameof(MonoBehaviour.OnCollisionBegin))) callbacks |= SceneCallbacks.CollisionBegin;
         if (Overrides(type, nameof(MonoBehaviour.OnCollisionEnd))) callbacks |= SceneCallbacks.CollisionEnd;
         if (Overrides(type, nameof(MonoBehaviour.OnTriggerEnter))) callbacks |= SceneCallbacks.TriggerEnter;
         if (Overrides(type, nameof(MonoBehaviour.OnTriggerStay))) callbacks |= SceneCallbacks.TriggerStay;
         if (Overrides(type, nameof(MonoBehaviour.OnTriggerExit))) callbacks |= SceneCallbacks.TriggerExit;
+#endif
+
+        if (Overrides(type, nameof(MonoBehaviour.OnCollisionBegin2D))) callbacks |= SceneCallbacks.CollisionBegin2D;
+        if (Overrides(type, nameof(MonoBehaviour.OnCollisionEnd2D))) callbacks |= SceneCallbacks.CollisionEnd2D;
+        if (Overrides(type, nameof(MonoBehaviour.OnTriggerEnter2D))) callbacks |= SceneCallbacks.TriggerEnter2D;
+        if (Overrides(type, nameof(MonoBehaviour.OnTriggerStay2D))) callbacks |= SceneCallbacks.TriggerStay2D;
+        if (Overrides(type, nameof(MonoBehaviour.OnTriggerExit2D))) callbacks |= SceneCallbacks.TriggerExit2D;
 
         return callbacks;
     }
@@ -391,6 +404,7 @@ internal sealed class SceneDispatcher
     // GameObject's live component list rather than stored as delegates, which is also what lets them survive
     // a hot reload for free: the list is repointed to the migrated instances and the masks are re-resolved.
 
+#if PROWL_PHYSICS_3D
     public static void CollisionBegin(GameObject go, in Collision collision)
     {
         if (go is null) return;
@@ -448,6 +462,57 @@ internal sealed class SceneDispatcher
         if (count == 1) { single.InternalOnTriggerExit(other); return; }
 
         try { for (int i = 0; i < count; i++) many![i].InternalOnTriggerExit(other); }
+        finally { Release(many!, count); }
+    }
+#endif
+
+    public static void CollisionBegin2D(GameObject go, Collision2D collision)
+    {
+        if (go is null) return;
+        int count = Collect(go, SceneCallbacks.CollisionBegin2D, out MonoBehaviour single, out MonoBehaviour[]? many);
+        if (count == 0) return;
+        if (count == 1) { single.InternalOnCollisionBegin2D(collision); return; }
+        try { for (int i = 0; i < count; i++) many![i].InternalOnCollisionBegin2D(collision); }
+        finally { Release(many!, count); }
+    }
+
+    public static void CollisionEnd2D(GameObject go, Collision2D collision)
+    {
+        if (go is null) return;
+        int count = Collect(go, SceneCallbacks.CollisionEnd2D, out MonoBehaviour single, out MonoBehaviour[]? many);
+        if (count == 0) return;
+        if (count == 1) { single.InternalOnCollisionEnd2D(collision); return; }
+        try { for (int i = 0; i < count; i++) many![i].InternalOnCollisionEnd2D(collision); }
+        finally { Release(many!, count); }
+    }
+
+    public static void TriggerEnter2D(GameObject go, Collider2D other)
+    {
+        if (go is null) return;
+        int count = Collect(go, SceneCallbacks.TriggerEnter2D, out MonoBehaviour single, out MonoBehaviour[]? many);
+        if (count == 0) return;
+        if (count == 1) { single.InternalOnTriggerEnter2D(other); return; }
+        try { for (int i = 0; i < count; i++) many![i].InternalOnTriggerEnter2D(other); }
+        finally { Release(many!, count); }
+    }
+
+    public static void TriggerStay2D(GameObject go, Collider2D other)
+    {
+        if (go is null) return;
+        int count = Collect(go, SceneCallbacks.TriggerStay2D, out MonoBehaviour single, out MonoBehaviour[]? many);
+        if (count == 0) return;
+        if (count == 1) { single.InternalOnTriggerStay2D(other); return; }
+        try { for (int i = 0; i < count; i++) many![i].InternalOnTriggerStay2D(other); }
+        finally { Release(many!, count); }
+    }
+
+    public static void TriggerExit2D(GameObject go, Collider2D other)
+    {
+        if (go is null) return;
+        int count = Collect(go, SceneCallbacks.TriggerExit2D, out MonoBehaviour single, out MonoBehaviour[]? many);
+        if (count == 0) return;
+        if (count == 1) { single.InternalOnTriggerExit2D(other); return; }
+        try { for (int i = 0; i < count; i++) many![i].InternalOnTriggerExit2D(other); }
         finally { Release(many!, count); }
     }
 

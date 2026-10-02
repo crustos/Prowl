@@ -417,6 +417,7 @@ public abstract class MonoBehaviour : EngineObject, ISerializationCallbackReceiv
     /// <param name="paper"></param>
     public virtual void OnGui(Paper paper) { }
 
+#if PROWL_PHYSICS_3D
     /// <summary>Called when this GameObject's <see cref="Rigidbody3D"/> begins touching another.</summary>
     public virtual void OnCollisionBegin(Collision collision) { }
 
@@ -431,6 +432,22 @@ public abstract class MonoBehaviour : EngineObject, ISerializationCallbackReceiv
 
     /// <summary>Called once when <paramref name="other"/> leaves a <see cref="TriggerVolume"/> on this GameObject.</summary>
     public virtual void OnTriggerExit(Rigidbody3D other) { }
+#endif
+
+    /// <summary>Called when a <see cref="Collider2D"/> on this GameObject (or its <see cref="Rigidbody2D"/>) begins touching another.</summary>
+    public virtual void OnCollisionBegin2D(Collision2D collision) { }
+
+    /// <summary>Called when a <see cref="Collider2D"/> on this GameObject (or its <see cref="Rigidbody2D"/>) stops touching another.</summary>
+    public virtual void OnCollisionEnd2D(Collision2D collision) { }
+
+    /// <summary>Called once when <paramref name="other"/> starts overlapping this GameObject's trigger <see cref="Collider2D"/>, or when this one starts overlapping a trigger.</summary>
+    public virtual void OnTriggerEnter2D(Collider2D other) { }
+
+    /// <summary>Called each fixed step after the one where <see cref="OnTriggerEnter2D"/> fired, while the overlap lasts.</summary>
+    public virtual void OnTriggerStay2D(Collider2D other) { }
+
+    /// <summary>Called once when the overlap ends. Not sent if either collider was destroyed or disabled during the overlap.</summary>
+    public virtual void OnTriggerExit2D(Collider2D other) { }
 
     /// <summary>Gated Start only runs in play mode or with [ExecuteAlways].</summary>
     internal void InternalStart()
@@ -499,6 +516,7 @@ public abstract class MonoBehaviour : EngineObject, ISerializationCallbackReceiv
 
     // ---- Physics callbacks: gameplay-gated + exception-guarded, dispatched by SceneDispatcher ----
 
+#if PROWL_PHYSICS_3D
     internal void InternalOnCollisionBegin(in Collision collision)
     {
         if (!ShouldExecuteGameplay) return;
@@ -532,6 +550,42 @@ public abstract class MonoBehaviour : EngineObject, ISerializationCallbackReceiv
         if (!ShouldExecuteGameplay) return;
         try { OnTriggerExit(other); }
         catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnTriggerExit() threw: {ex.Message}\n{ex.StackTrace}"); }
+    }
+#endif
+
+    internal void InternalOnCollisionBegin2D(Collision2D collision)
+    {
+        if (!ShouldExecuteGameplay) return;
+        try { OnCollisionBegin2D(collision); }
+        catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnCollisionBegin2D() threw: {ex.Message}\n{ex.StackTrace}"); }
+    }
+
+    internal void InternalOnCollisionEnd2D(Collision2D collision)
+    {
+        if (!ShouldExecuteGameplay) return;
+        try { OnCollisionEnd2D(collision); }
+        catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnCollisionEnd2D() threw: {ex.Message}\n{ex.StackTrace}"); }
+    }
+
+    internal void InternalOnTriggerEnter2D(Collider2D other)
+    {
+        if (!ShouldExecuteGameplay) return;
+        try { OnTriggerEnter2D(other); }
+        catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnTriggerEnter2D() threw: {ex.Message}\n{ex.StackTrace}"); }
+    }
+
+    internal void InternalOnTriggerStay2D(Collider2D other)
+    {
+        if (!ShouldExecuteGameplay) return;
+        try { OnTriggerStay2D(other); }
+        catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnTriggerStay2D() threw: {ex.Message}\n{ex.StackTrace}"); }
+    }
+
+    internal void InternalOnTriggerExit2D(Collider2D other)
+    {
+        if (!ShouldExecuteGameplay) return;
+        try { OnTriggerExit2D(other); }
+        catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnTriggerExit2D() threw: {ex.Message}\n{ex.StackTrace}"); }
     }
 
     // Implemented explicitly so the identity rules below always run. They used to live in the virtual

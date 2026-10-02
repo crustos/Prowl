@@ -40,14 +40,26 @@ public class PhysicsSettings : ProjectSettingsBase
     // Advanced
     /// <summary> Enforces deterministic physics simulation across runs, at the cost of performance. </summary>
     public bool EnhancedDeterminism = false;
+#if PROWL_PHYSICS_3D
     /// <summary> Controls whether the physics thread is persistent or created per-frame. </summary>
     public PhysicsThreadModel ThreadModel = PhysicsThreadModel.Regular;
+#endif
     /// <summary> Enables additional contact points for collision detection, improving stability at the cost of performance. </summary>
     public bool EnableAuxiliaryContactPoints = true;
     /// <summary> Enables persistent contact manifolds to reduce contact generation overhead across frames. </summary>
     public bool PersistentContactManifold = true;
     /// <summary> Factor controlling speculative contact relaxation. Range 0-1. Higher values reduce jitter. </summary>
     public float SpeculativeRelaxationFactor = 0.9f;
+
+    // 2D (Box2D-Packed)
+    /// <summary> X component of the 2D gravity vector, in world units per second squared. </summary>
+    public float Gravity2DX = 0f;
+    /// <summary> Y component of the 2D gravity vector, in world units per second squared. </summary>
+    public float Gravity2DY = -9.81f;
+    /// <summary> Solver sub-steps per fixed update for 2D physics. Range 1-16. Higher is more stable for stacks and joints, and costs more. </summary>
+    public int SubSteps2D = 4;
+    /// <summary> Worker threads the 2D solver may use. 1 runs the whole step on the calling thread. Takes effect when the scene's 2D world is next created. </summary>
+    public int WorkerCount2D = 1;
 
     // Collision matrix stored as 32 uints (bit rows)
     /// <summary> Layer collision matrix stored as 32 bit-rows. Each row is a uint where bit j indicates whether layer i collides with layer j. </summary>
@@ -81,6 +93,7 @@ public class PhysicsSettings : ProjectSettingsBase
     private void ApplyToScene(Runtime.Resources.Scene scene)
     {
         if (scene == null) return;
+#if PROWL_PHYSICS_3D
         scene.Physics.Gravity = new Float3(GravityX, GravityY, GravityZ);
         scene.Physics.SolverIterations = SolverIterations;
         scene.Physics.RelaxIterations = RelaxIterations;
@@ -93,6 +106,11 @@ public class PhysicsSettings : ProjectSettingsBase
         scene.Physics.EnableAuxiliaryContactPoints = EnableAuxiliaryContactPoints;
         scene.Physics.PersistentContactManifold = PersistentContactManifold;
         scene.Physics.SpeculativeRelaxationFactor = SpeculativeRelaxationFactor;
+#endif
+
+        scene.Physics2D.Gravity = new Float2(Gravity2DX, Gravity2DY);
+        scene.Physics2D.Substeps = SubSteps2D;
+        scene.Physics2D.WorkerCount = WorkerCount2D;
     }
 
     public override void ResetToDefaults()
@@ -105,10 +123,15 @@ public class PhysicsSettings : ProjectSettingsBase
         UseMultithreading = true;
         AutoSyncTransforms = true;
         EnhancedDeterminism = false;
+#if PROWL_PHYSICS_3D
         ThreadModel = PhysicsThreadModel.Regular;
+#endif
         EnableAuxiliaryContactPoints = true;
         PersistentContactManifold = true;
         SpeculativeRelaxationFactor = 0.9f;
+        Gravity2DX = 0; Gravity2DY = -9.81f;
+        SubSteps2D = 4;
+        WorkerCount2D = 1;
         CollisionMatrixRows = CreateDefaultCollisionMatrix();
     }
 
@@ -124,6 +147,7 @@ public class PhysicsSettings : ProjectSettingsBase
         var font = EditorTheme.DefaultFont;
         if (font == null) return;
 
+#if PROWL_PHYSICS_3D
         // Gravity
         Origami.Header(paper, "phys_h_grav", $"{EditorIcons.Atom}  Gravity").Underline().Show();
 
@@ -163,6 +187,16 @@ public class PhysicsSettings : ProjectSettingsBase
         EditorGUI.SettingsSliderField(paper, "phys_specrelax", "Speculative Relaxation Factor", SpeculativeRelaxationFactor, 0f, 1f, v => SpeculativeRelaxationFactor = v);
 
         paper.Box("phys_sp3").Height(8);
+#endif
+
+        // 2D
+        Origami.Header(paper, "phys_h_2d", $"{EditorIcons.Atom}  2D Physics").Underline().Show();
+        EditorGUI.Row(paper, "phys_gravity2d", "Gravity", () =>
+            Origami.Float2Field(paper, "phys_gravity2d_vf", new Float2(Gravity2DX, Gravity2DY),
+                v => { Gravity2DX = v.X; Gravity2DY = v.Y; EditorRegistries.SaveSettings(); }).Show());
+        EditorGUI.SettingsIntSlider(paper, "phys_substeps2d", "Sub-Steps", SubSteps2D, 1, 16, v => SubSteps2D = v);
+        EditorGUI.SettingsIntSlider(paper, "phys_workers2d", "Worker Threads", WorkerCount2D, 1, 16, v => WorkerCount2D = v);
+        paper.Box("phys_sp_2d").Height(8);
 
         // Collision Matrix
         Origami.Header(paper, "phys_h_coll", "Layer Collision Matrix").Underline().Show();

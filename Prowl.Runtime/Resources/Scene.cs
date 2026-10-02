@@ -332,10 +332,20 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
     private HashSet<GameObject> _allObjSet = new(ReferenceEqualityComparer.Instance);
 
     // The worlds below only index the scene's own components, which the walk reaches through _allObj.
+#if PROWL_PHYSICS_3D
     [NotHeld]
     private PhysicsWorld _physics = new();
+#endif
 
+#if PROWL_PHYSICS_3D
     public PhysicsWorld Physics { get { EnsureNotDisposed(); return _physics; } }
+#endif
+
+    // Box2D-Packed. Only the running scene can hold the native world; see PhysicsWorld2D.
+    [NotHeld]
+    private PhysicsWorld2D _physics2D = new();
+
+    public PhysicsWorld2D Physics2D { get { EnsureNotDisposed(); return _physics2D; } }
 
     [SerializeIgnore, NotHeld]
     private readonly NavMeshWorld _navigation = new();
@@ -955,8 +965,10 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
 
         lock (s_live) s_live.RemoveAll(entry => !entry.TryGetTarget(out Scene? scene) || ReferenceEquals(scene, this));
 
+#if PROWL_PHYSICS_3D
         // Clear the physics world
         _physics.Clear();
+#endif
 
         // Clear the navigation world (waits out in-flight queries)
         _navigation.Clear();
@@ -972,6 +984,9 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
         // Clear any remaining references
         _allObj.Clear();
         _allObjSet.Clear();
+
+        // The 2D bodies left with their GameObjects above; give the native world back if nothing is still using it.
+        _physics2D.ReleaseIfIdle();
 
         // Remove all identifiers and reference to any possible gameobject that could hold a
         // user-defined script as it might leave the ALC alive
@@ -1048,10 +1063,15 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
 
         _dispatcher.RunFixedUpdate();
 
+#if PROWL_PHYSICS_3D
         // A solver blow up (NaN or Inf transforms, degenerate collider) must not crash the frame.
         try { Physics.Update(); }
         // A solver that blows up does so every frame, so report it once rather than per frame.
         catch (Exception ex) { Debug.LogErrorOnce("Physics.StepThrew", $"[Physics] Step threw and was skipped this frame: {ex.Message}\n{ex.StackTrace}"); }
+#endif
+
+        try { Physics2D.Update(); }
+        catch (Exception ex) { Debug.LogErrorOnce("Physics2D.StepThrew", $"[Physics2D] Step threw and was skipped this frame: {ex.Message}\n{ex.StackTrace}"); }
 
         Flush();
     }

@@ -491,8 +491,10 @@ public class Mesh : Asset, ISerializable
     private int lastIndexCount = 0;
     private VertexFormat lastVertexLayout = null;
 
+#if PROWL_PHYSICS_3D
     /// <summary>Cached physics bake (see <see cref="PhysicsWorld.BakeMesh"/>).
     internal BakedPhysicsMesh? BakedPhysics;
+#endif
 
     public Mesh() { }
 

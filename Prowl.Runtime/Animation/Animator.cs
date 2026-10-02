@@ -44,9 +44,13 @@ public class Animator : MonoBehaviour
     [NonSerialized] private ProwlClipAnimator? _clips;
     [NonSerialized] private ProwlGraphAnimator? _graph;
     [NonSerialized] private MotionAvatar? _boundAvatar;
+#if PROWL_PHYSICS_3D
     [NonSerialized] private AnimatorRagdoll? _ragdoll;
+#endif
 
+#if PROWL_PHYSICS_3D
     internal AnimatorRagdoll? Ragdoll => _ragdoll;
+#endif
     [NonSerialized] private AnimationClip? _pending;
     [NonSerialized] private bool _autoPlayPending;
     [NonSerialized] private readonly Dictionary<string, ParameterValue> _pendingParameters = new();
@@ -107,8 +111,10 @@ public class Animator : MonoBehaviour
         _graph = null;
         _boundAvatar = null;
         _boundAvatarAsset = null;
+#if PROWL_PHYSICS_3D
         _ragdoll?.Release();
         _ragdoll = null;
+#endif
     }
 
     /// <summary>Sets a graph parameter. A write made before the graph is bound is applied once it is.</summary>
@@ -389,7 +395,9 @@ public class Animator : MonoBehaviour
         _boundAvatar = runtime;
         _boundAvatarAsset = avatar;
         _boundAvatarContent = avatar.ContentVersion;
+#if PROWL_PHYSICS_3D
         _ragdoll = new AnimatorRagdoll(this, binding, avatar.Skeleton, runtime.Humanoid);
+#endif
 
         // The graph as assigned, even one that failed to load, so the next frames do not keep retrying it.
         _boundGraph = Graph;
@@ -525,7 +533,9 @@ public class Animator : MonoBehaviour
 
         // The ragdoll stands where the feet are, so the probe would find it as the ground.
         var filter = new QueryFilter(GroundLayers);
+#if PROWL_PHYSICS_3D
         if (_ragdoll != null) filter = filter.Ignoring(_ragdoll.Bodies);
+#endif
 
         if (!Scene!.Physics.Raycast(origin, direction, out RaycastHit hit, maxDistance, filter))
             return false;

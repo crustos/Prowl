@@ -1,3 +1,4 @@
+#if PROWL_PHYSICS_3D
 // This file is part of the Prowl Game Engine
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
@@ -600,3 +601,4 @@ internal sealed class AnimatorRagdoll
 
     private static Float3 Position(Rigidbody3D body) => body.Native!.Position.ToProwl();
 }
+#endif

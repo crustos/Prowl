@@ -1,3 +1,4 @@
+#if PROWL_PHYSICS_3D
 // This file is part of the Prowl Game Engine
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
@@ -355,3 +356,4 @@ public static class RagdollBuilder
         return MathF.Max(MathF.Max(MathF.Abs(lossy.X), MathF.Abs(lossy.Y)), MathF.Max(MathF.Abs(lossy.Z), 1e-6f));
     }
 }
+#endif

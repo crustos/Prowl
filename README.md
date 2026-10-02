@@ -182,9 +182,23 @@ Getting Prowl up and running is super easy!
 
 ### Installation
 
-1. Clone the repo
-2. Open `.sln` with your editor ([Visual Studio Version 17.8.0+](https://visualstudio.microsoft.com/vs/preview/), [VSCode](https://code.visualstudio.com/), [Rider]((https://www.jetbrains.com/rider/)), etc.)
-3. That's it! 😄 🎉
+Prowl's default physics is **2D**, built on [Box2D-Packed](https://github.com/crustos/box2d). Box2D lives next to this repository, not inside it:
+
+```
+parent/
+  Prowl/      this repository
+  box2d/      https://github.com/crustos/box2d
+```
+
+1. Clone the repo, then `python3 build.py deps` to clone `../box2d` (needs `git`)
+2. `python3 build.py` builds the native physics library (needs `cmake` and a C compiler) and then the managed solution (needs the .NET SDK)
+3. Open `Prowl.slnx` with your editor ([Visual Studio Version 17.8.0+](https://visualstudio.microsoft.com/vs/preview/), [VSCode](https://code.visualstudio.com/), [Rider](https://www.jetbrains.com/rider/), etc.)
+
+`python3 build.py -h` lists everything it can do: run the 2D physics tests (`test`), check the 3D switch (`check3d`), and measure how much of the 2D engine CCSharp can translate to C (`scan`).
+
+#### 3D physics
+
+3D physics (Jitter2) is still in the tree, but it is **off by default and not maintained**: it is there for someone else to take over. Build with it using `python3 build.py --3d`, or `dotnet build -p:ProwlPhysics3D=true`. `python3 build.py check3d` verifies that the seam between the two builds still holds.
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 # <span align="center">🤝 Contributing 🤝</span>

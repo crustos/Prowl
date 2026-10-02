@@ -5,4 +5,18 @@
     <ProwlPackageVersion>3.6.2</ProwlPackageVersion>
   </PropertyGroup>
 
+  <!--
+    3D physics (Jitter2) is OFF by default. Prowl's default physics is 2D (Box2D-Packed). The 3D code is kept, but it is not
+    maintained: it is there for someone else to take over. Turn it on with
+        dotnet build -p:ProwlPhysics3D=true         (or: python3 build.py with its 3d option)
+    which defines PROWL_PHYSICS_3D, restores the Jitter2 package and compiles Physics/, Components/Physics/ and everything
+    guarded by #if PROWL_PHYSICS_3D.
+  -->
+  <PropertyGroup>
+    <ProwlPhysics3D Condition="'$(ProwlPhysics3D)' == ''">false</ProwlPhysics3D>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ProwlPhysics3D)' == 'true'">
+    <DefineConstants>$(DefineConstants);PROWL_PHYSICS_3D</DefineConstants>
+  </PropertyGroup>
+
 </Project>

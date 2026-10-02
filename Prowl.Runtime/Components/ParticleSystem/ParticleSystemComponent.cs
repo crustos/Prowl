@@ -219,7 +219,7 @@ public class ParticleSystemComponent : MonoBehaviour
     private Float3 _emitterMoveSim;
     private float _emitterMoveDistance;
     private Float3 _gravitySim;
-    private PhysicsWorld? _physics;
+    private ParticlePhysicsWorld? _physics;
     private float _frameDt;
     private float _stepStart;
     private float _stepDt;
@@ -830,7 +830,11 @@ public class ParticleSystemComponent : MonoBehaviour
         ClaimSubEmitters();
         _collisionEvents.Clear();
         Scene? scene = Scene;
+#if PROWL_PHYSICS_3D
         _physics = scene.IsValid() ? scene.Physics : null;
+#else
+        _physics = scene.IsValid() ? scene.Physics2D : null;
+#endif
         if (Wind.Enabled) Wind.BeginStep(this);
 
         _frameDt = dt;

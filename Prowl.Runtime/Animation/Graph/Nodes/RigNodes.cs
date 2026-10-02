@@ -115,6 +115,7 @@ public sealed class LookAtNode : AnimationGraphNode
         ctx.Get(r, _weight), ctx.Get(r, _clamp), ctx.Get(r, _body), ctx.Get(r, _head), ctx.Get(r, _eyes)));
 }
 
+#if PROWL_PHYSICS_3D
 public sealed class RagdollNode : AnimationGraphNode
 {
     private readonly InputPin _pose = PoseInput();
@@ -195,7 +196,9 @@ public sealed class RagdollNode : AnimationGraphNode
         }
     }
 }
+#endif
 
+#if PROWL_PHYSICS_3D
 /// <summary>Which of a ragdoll's parts the pin holds to the animation.</summary>
 public enum RagdollPinning
 {
@@ -204,6 +207,7 @@ public enum RagdollPinning
     /// <summary>Only the hips, so the rest of the body swings on its muscles.</summary>
     Hips,
 }
+#endif
 
 public sealed class SpringBonesNode : AnimationGraphNode
 {

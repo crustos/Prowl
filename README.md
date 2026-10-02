@@ -1,263 +1,362 @@
-﻿<img src="https://i.imgur.com/qoJ4RTS.png" width="100%" alt="Prowl logo image">
+# Prowl
 
-![Github top languages](https://img.shields.io/github/languages/top/ProwlEngine/Prowl)
-[![GitHub version](https://img.shields.io/github/v/release/ProwlEngine/Prowl?include_prereleases&style=flat-square)](https://github.com/ProwlEngine/Prowl/releases)
-[![GitHub license](https://img.shields.io/github/license/ProwlEngine/Prowl?style=flat-square)](https://github.com/ProwlEngine/Prowl/blob/main/LICENSE.txt)
-[![GitHub issues](https://img.shields.io/github/issues/ProwlEngine/Prowl?style=flat-square)](https://github.com/ProwlEngine/Prowl/issues)
-[![GitHub stars](https://img.shields.io/github/stars/ProwlEngine/Prowl?style=flat-square)](https://github.com/ProwlEngine/Prowl/stargazers)
-[![Discord](https://img.shields.io/discord/1151582593519722668?logo=discord
-)](https://discord.gg/BqnJ9Rn4sn)
+![Github top languages](https://img.shields.io/github/languages/top/crustos/Prowl)
+[![GitHub license](https://img.shields.io/github/license/crustos/Prowl?style=flat-square)](LICENSE)
 
-# <p align="center">🎮 An Open Source Unity-like Engine! 🎮</p>
+**A Unity-like game engine, now a 2D engine, on [Box2D-Packed](https://github.com/crustos/box2d), whose core is being rewritten in a C# subset that translates to C.**
 
-<span id="readme-top"></span>
+Prowl is an MIT-licensed engine written in C# on .NET 10, with a GameObject/Component model, a full editor, and a Unity-shaped scripting API. This
+fork changes two things about it:
 
-1. [About The Project](#-about-the-project-)
-2. [Features](#-features-)
-3. [Getting Started](#-getting-started-)
-   * [Prerequisites](#prerequisites)
-   * [Installation](#installation)
-4. [Contributing](#-contributing-)
-5. [Acknowledgments](#-acknowledgments-)
-   * [Contributors](#contributors-)
-   * [Dependencies](#dependencies-)
-6. [License](#-license-)
+1. **The physics is 2D, and it is Box2D.** `Rigidbody2D`, `Collider2D`, triggers, layers and scene queries run on Box2D-Packed (Box2D v3 with a
+   cache-friendly handle layout) through a thin C shim. The old 3D physics (Jitter) is kept but switched off, and nobody maintains it: see [3D.md](3D.md).
+2. **The core is moving to C.** Not by hand. The core is being rewritten in a *subset* of C# that a compiler ([CCSharp](https://github.com/crustos/CCSharp))
+   translates to C, so the same source runs on .NET in the editor and as plain C in a shipped game, right next to Box2D.
 
-# <span align="center">📝 About The Project 📝
+The second point is a direction, and most of it is not built yet. This page separates what exists, what has been proven, and what is still a plan.
 
-Prowl is an open-source, **[MIT-licensed](https://github.com/ProwlEngine/Prowl/blob/main/LICENSE)** game engine developed in **pure C# in latest .NET**.
+> **Status in one paragraph.** 2D physics works and is tested (261 checks against the real native library, plus the real components running in a headless
+> engine). About 340 lines of the engine, the geometry, outline and pose math, have been translated to C and produce output identical to the same C# on .NET.
+> The rest of the core does not translate yet; the compiler says exactly why (see [The core rewrite](#the-core-rewrite-c-to-c)). **A full `dotnet build` of the
+> whole solution has not been run since these changes**, because the machine they were developed on could not reach NuGet; do that first (see [Building](#building)).
 
-It aims to provide a seamless transition for developers familiar with _Unity_ by maintaining a similar API while also following KISS and staying as small and customizable as possible. Ideally, _Unity_ projects can port over with as little resistance as possible.
+1. [What works today](#what-works-today)
+2. [How the 2D physics is built](#how-the-2d-physics-is-built)
+3. [Box2D-Packed](#box2d-packed)
+4. [The core rewrite: C# to C](#the-core-rewrite-c-to-c)
+5. [Building](#building)
+6. [Repository map](#repository-map)
+7. [Roadmap](#roadmap)
+8. [Contributing, acknowledgments, license](#contributing)
 
-Prowl is currently in **1.0-preview**, following a complete rewrite of the Editor, renderer, physics, audio, and UI. Projects made with older versions of Prowl are not compatible with 1.0-preview, there is no migration path. Until the final 1.0 release, further breaking changes are still possible.
+---
 
-### [<p align="center">Join our Discord server! 🎉</p>](https://discord.gg/BqnJ9Rn4sn)
+## What works today
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/R7B4280JI3)
+**2D physics** (components live in `Prowl.Runtime/Components/Physics2D`):
 
-<img width="100%" alt="image 5" src="https://i.imgur.com/hDXtuv5.png" />
+- **Bodies.** `Rigidbody2D` with Static / Kinematic / Dynamic types, mass, gravity scale, damping, freeze constraints (position X/Y, rotation), continuous
+  detection for fast bodies, sleeping, and interpolation between fixed steps. Angles are in degrees. Force, acceleration, impulse and velocity-change modes.
+  A kinematic body moved with `MovePosition` carries what rides on it.
+- **Colliders.** Circle, Box (with rounded corners), Capsule, convex Polygon (up to 8 points, Box2D's limit) and Edge (two-sided, open or looped). A
+  collider on a child GameObject belongs to the nearest rigidbody above it; one with no rigidbody is static level geometry. Lossy scale, offsets and
+  rotations are folded into the shape.
+- **Events.** `OnCollisionBegin2D` / `OnCollisionEnd2D` with contact point, normal and impulse, and `OnTriggerEnter2D` / `Stay2D` / `Exit2D`. The normal
+  points from the other collider toward you, so `collision.Normal.Y > 0.5f` is a ground check.
+- **Layers.** All 32 layers and the existing 32x32 collision matrix. The matrix is evaluated inside the native filter, so a layer pair costs no managed
+  callback.
+- **Queries.** `Raycast`, `RaycastAll`, `OverlapPoint`, `OverlapCircle`, `OverlapBox`, with a `QueryFilter2D` (layer mask, ignore a collider or a whole
+  rigidbody, exclude triggers).
+- **Editor.** Collider gizmos that draw the shape the physics actually builds (green, yellow for triggers, red when a shape is invalid), vertex handles
+  and a link to the owning rigidbody when selected; inspector tooltips, ranges and `ShowIf`; a 2D section in Project Settings (gravity, sub-steps, worker
+  threads); *GameObject > 2D Physics* menu items.
 
-| ![Screenshot](https://i.imgur.com/khCaEB5.png) | ![Screenshot](https://i.imgur.com/qNeMvC4.jpeg) |
-| :-: | :-: |
-| ![image](https://i.imgur.com/xooqeDx.png) | ![image](https://i.imgur.com/zbCJOwI.png) |
-| ![UntitledFLightModel](https://i.imgur.com/TkJOmw9.png) | ![Untitled](https://i.imgur.com/BXn31d0.png) |
-| ![UntitledFLightModel](https://i.imgur.com/rLGLo7h.png) | ![Untitled](https://i.imgur.com/jbKCif2.png) |
+```csharp
+// using Prowl.Runtime; using Prowl.Vector;
+public class Player : MonoBehaviour
+{
+    private Rigidbody2D body = null!;
+    private Collider2D feet = null!;
 
-# <span align="center">✨ Features ✨</span>
+    public override void OnEnable()
+    {
+        body = GetComponent<Rigidbody2D>()!;
+        feet = GetComponent<Collider2D>()!;
+    }
 
--   **General:**
-    - Cross-Platform! Windows, Linux & Mac, for both the Editor and exported builds
-    - Unity-like Editor & Scripting API
-    - C# Scripting with .NET 10
-    - GameObject & MonoBehaviour Component Architecture
-    - **Prowl.Runtime works fully standalone from the Editor** - reference it directly and ship a game with zero Editor dependency
-    - Custom Immediate Mode UI ([Paper](https://github.com/ProwlEngine/Anthology)), Editor built on top of [Origami](https://github.com/ProwlEngine/Anthology)
-    - Vector Graphics & Text Rendering via [Quill](https://github.com/ProwlEngine/Anthology)
-    - Full-Featured Editor
-        - Scene View, Hierarchy, Inspector, Project Browser, Console, Game View
-        - Custom Component Editors, Property Editors, and Scene View Editors
-        - Transform Gizmos (Move, Rotate, Scale)
-        - Undo/Redo System
-        - Dockable & Resizable Panels with Layout Persistence
-        - Drag & Drop (Assets, GameObjects, Components)
-        - Multi-Select & Search/Filtering in Editor Panels
-        - Asset Thumbnail Generation & 3D Previews
-        - Animation Curve & Gradient Editors
-        - Rebindable Shortcut/Hotkey System
-        - Editor Theming with Customizable Color Palettes and sizing
-        - Playtest directly in the Editor
-        - Hot-Reloading Scripts
-        - Localization - English, German, Spanish, French, Italian, Japanese, Korean, Polish, Portuguese, Russian, Turkish & Chinese
-        - Managed & Native Plugins with Assembly Definitions
-    - Physics using [Jitter Physics 2](https://github.com/notgiven688/jitterphysics2)
-        - Colliders: Box, Sphere, Capsule, Cylinder, Cone, Convex Hull, Mesh, Model, Terrain
-        - Wheel Collider (raycast-based vehicle wheel, with suspension & slip-based grip)
-        - Joints & Constraints: Ball Socket, Hinge Joint, Hinge Angle, Fixed Angle, Cone Limit, Distance Limit, Twist Angle, Prismatic, Universal, Point On Line, Point On Plane, Angular Motor, Linear Motor
-        - Character Controller
-        - Trigger Volumes (Box, Sphere, Capsule)
-        - Collision Layers & Filtering (LayerMask)
-        - Raycasting & Shape Query API
-    - Audio via MiniAudio
-        - Spatial 3D Audio with Attenuation & Doppler
-        - Supports WAV, MP3, OGG, FLAC
-        - Effect chain (Delay, Distortion, Biquad Filter, Reverb, Phaser) + custom `IAudioEffect`
-    - Serialization via [Prowl.Echo](https://github.com/ProwlEngine/Anthology)
-    - Tags & Layers System
-    - Scene System with Fog & Ambient Lighting
-    - Prefabs with Nested Prefab Support
-        - Apply, Revert, Break Instance & Override Tracking
-    - Projects & Project Settings
-    - Script Compilation via dotnet build (Game & Editor Assemblies)
-    - Input Action System with Composites & Processors
-        - `.inputactions` assets with a dedicated editor
-        - Action phases (Disabled / Started / Performed / Cancelled)
-        - Composite bindings (WASD → Float2, D-pad, etc.) for keyboard, mouse & gamepad
-    - GameObject-Based UI, including World Space UI
-        - `RectTransform`-driven layout, Buttons, Sliders, layout groups, drag & drop event handlers
-    - Prowl Actions - persistent, inspector-configurable event callbacks
-    - Math via [Prowl.Vector](https://github.com/ProwlEngine/Anthology)
-        - Matrices (`Float4x4`), Quaternions, Transform2D
-        - Shapes: AABB, Bounds, Frustum, Cone, Ray, Plane, LineSegment, Rect
-    - Build System - Build to Standalone Application
-        - Packed Asset Files (.prowlpak)
-        - Only exports used assets
-        - Per-platform build profiles
-        - Supports Windows, Mac & Linux
-    - Unit Tested - 450+ tests across the Runtime and Editor
+    public void Jump()
+    {
+        // ask the scene's 2D world whether there is ground just below, ignoring ourselves
+        var world = GameObject.Scene.Physics2D;
+        var filter = QueryFilter2D.Default.Ignoring(body).Ignoring(feet);
+        if (world.Raycast(body.Position, new Float2(0, -1), out RaycastHit2D hit, 0.6f, filter))
+            body.AddForce(new Float2(0, 6), ForceMode.Impulse);
+    }
 
--   **Graphics Rendering:**
-    - OpenGL Backend via [Silk.NET](https://github.com/dotnet/Silk.NET)
-	- Dedicated Render Thread
-    - Extensible Render Pipeline (Custom Pipelines Supported)
-    - Forward-Lit Pipeline with Thin G-Buffer Pre-Pass (Depth, Normals, Motion, Roughness, Metallic)
-	- UV-Unwrapping via [Prowl.Unwrapper](https://github.com/ProwlEngine/Anthology), Progressive Lightmapper via [Prowl.Photonic](https://github.com/ProwlEngine/Anthology)
-	- Baked Light Probes
-    - Custom Shader Language with #include Support, Multi-Pass, and Shader Keywords/Variants
-    - HDR & PBR (Physically Based Rendering) - Metallic Workflow
-        - Albedo, Normal, Surface (AO / Roughness / Metallic), Emission Maps
-    - Mesh Renderer & Skinned Mesh Renderer with Bone Animation and Blendshapes
-    - Line Renderer
-    - Sprites, with Sprite Sheet slicing (Grid, Isometric & Automatic alpha-based slicing) and a dedicated Sprite Editor
-    - Render Textures & Texture3D
-    - GPU Instancing & Frustum Culling
-    - Point, Spot, and Directional Lights
-        - All light types support Shadow Mapping
-        - Cascaded Shadow Maps for Directional Lights (up to 4 cascades)
-        - Cubemap Shadows for Point Lights
-        - Shadow Atlas with Dynamic Packing
-    - Post Processing
-        - HDR Tonemapping (ACES / Reinhard / Uncharted / Filmic / Melon / AgX)
-        - Bloom (dual-filter downsample/upsample)
-        - FXAA (Fast Approximate Anti-Aliasing)
-		- TAA (Temporal Anti-Aliasing)
-        - SMAA 
-        - Ground-Truth Ambient Occlusion (GTAO)
-		- Stochastic Screen Space Reflections (SSR)
-        - Bokeh Depth of Field
-        - Volumetric Fog
-        - Cinematic Effects (grain, vignette, chromatic aberration)
-    - Transparency
-    - Grab Pass (depth-aware) for refraction / heat-haze / frosted glass
-    - Procedural / Cubemap / Gradient Skybox
-    - Terrain System
-        - Quadtree LOD
-        - Heightmap & Splatmap Painting
-        - GPU-Instanced Grass Rendering
-        - Tree Rendering with LOD Distance
-        - Dedicated Terrain Editor (Height, Paint, Grass, Trees, Settings)
-		- Holes
-    - Particle System
-        - GPU-Instanced Rendering
-        - Modules: Emission, Size/Color/Rotation/Velocity Over Lifetime, Collision, UV Animation
-        - Local & World Simulation Spaces
+    public override void OnCollisionBegin2D(Collision2D collision)
+    {
+        if (collision.Normal.Y > 0.5f) { /* landed */ }
+    }
+}
+```
 
--   **Asset Pipeline:**
-    - GUID-Based Asset References with Meta Files
-    - Import Caching & File Watching for Auto-Reimport
-    - Custom Importers via Attributes
-    - Sub-Assets with Deterministic GUIDs
-    - Forward & Reverse Dependency Tracking
-	- Threaded Asset Loading
-    - Supported Formats:
-        - Models: GLTF, GLB, OBJ, FBX (via [Prowl.Clay](https://github.com/ProwlEngine/Anthology))
-        - Textures: PNG, JPG, BMP, TGA, PSD, HDR, DDS, EXR (via Magick.NET)
-        - Audio: WAV, MP3, OGG, FLAC
+**Not there yet:** joints (Box2D has them; they are not wrapped), one-sided chains in the components (the shim has them), extrapolation (it falls back to
+no interpolation), a tilemap, and a 2D sample scene (the existing samples are 3D). Particles collide with planes but not with the 2D world.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+**Limits you should know about.** Box2D-Packed has one world per process, so only one scene at a time can have live 2D bodies; a preview scene beside
+the running game gets inert components and one logged error rather than corrupting the live world. Handles are 16-bit, which caps a world at 65,535 bodies
+and 65,535 shapes. A collider that is destroyed or disabled while overlapping a trigger sends no Exit.
 
-# <span align="center">🚀 Getting Started 🚀</span>
+The rest of the engine is unchanged Prowl: the editor (scene view, hierarchy, inspector, undo/redo, docking, hot-reloading scripts, playtest in the
+editor), `SpriteRenderer` with sprite-sheet slicing and a sprite editor, GameObject-based UI, particles, audio via MiniAudio, an input action system,
+prefabs with nested-prefab support, a build system for standalone apps, and `Prowl.Runtime` usable on its own without the editor. The 3D renderer is
+described in [3D.md](3D.md); it is still there and it is not behind the 3D-physics switch.
 
-Getting Prowl up and running is super easy!
+---
 
-### Prerequisites
+## How the 2D physics is built
 
-* [.NET 10](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+```
+  Box2D-Packed                C      ../box2d, built into the shim below
+        ^   linked statically
+  prowl_box2d                 C      Native/Box2D/prowl_box2d.c     the only thing C# talks to
+        ^   P/Invoke, one crossing per frame
+  PB2 + Box2DWorld            C#     Prowl.Runtime/Physics2D/Native     checks the ABI when it starts
+        ^
+  PhysicsSimulation2D         C#     Prowl.Runtime/Physics2D            ownership, registries, events, queries
+        ^
+  PhysicsWorld2D, Rigidbody2D, Collider2D ...   C#   engine glue: Transforms, interpolation, gizmos, inspector
+```
 
-## Releases
+**The shim exists because Box2D-Packed's definition structs use `bool x : 1` bitfields.** Their layout is up to the compiler, so C# cannot mirror
+them safely. Every record the shim exposes is made of 4-byte fields, and `Box2DWorld.Create` compares all their sizes against the loaded library and
+refuses to run on a mismatch, rather than corrupting memory.
 
-> **Note**: Prowl is now at **1.0-preview**, grab it from the [Releases page](https://github.com/ProwlEngine/Prowl/releases). Projects made with older, pre-1.0-preview versions of Prowl are not compatible and cannot be migrated.
+**One call per frame.** `pb2_step` steps the world and returns every body that moved, every contact begin and end (with the manifold's point, normal and
+impulse already worked out), and every sensor overlap, as flat arrays. A kinematic move or a teleport is queued and flushed in one call. Box2D identifies
+bodies and colliders to the shim by small integers carried in `userData`, so an event turns back into a managed object with one array read.
 
-## Build from source
+**The layer matrix lives in the native filter.** Box2D-Packed filters are 16 bits; Prowl has 32 layers. The shim packs the layer into each shape's
+`userData` and evaluates the 32x32 matrix in a custom filter callback, which also makes chain and segment shapes inherit it. Sensors ignore that
+filter, so the shim applies the matrix to sensor events itself.
 
+**Sleeping bodies are woken when something changes under them.** Box2D does not wake a sleeping body when a static collider is moved into or out from
+under it, or when its motion locks change, so a platform moved through its Transform would leave bodies hanging in the air. The shim wakes bodies
+overlapping the old and new bounds of a moved static body, and on a flag change.
 
-### Installation
+**Gizmos and the physics share one geometry path.** Gizmos run in the editor with nothing playing, so they cannot ask the physics world. Each collider
+resolves its dimensions in one place used by both the shape builder and the gizmo, and the polygon gizmo uses a line-for-line port of Box2D's own hull
+code, so it agrees with Box2D about which point sets are valid at all. That agreement is tested over 4,200 point sets, including near-degenerate ones,
+with zero disagreements.
 
-Prowl's default physics is **2D**, built on [Box2D-Packed](https://github.com/crustos/box2d). Box2D lives next to this repository, not inside it:
+### How it was tested without building the whole engine
+
+`Prowl.Runtime` needs NuGet to build, so the 2D layer is exercised by a harness that does not (`Native/Box2D/Tests/Box2DSmoke`, 261 checks):
+
+- the native shim and its bindings, against the real library;
+- the engine-independent core (pose interpolation, the slot registry, ownership handoff between scenes, event ordering, handlers that destroy objects in
+  the middle of dispatch, queries);
+- the **real** `Rigidbody2D`, `Collider2D` and `PhysicsWorld2D` source files, compiled unmodified against a small headless engine (`EngineStubs/MiniEngine.cs`
+  mirrors the engine's real namespaces, because an earlier version that did not hid a genuine compile error);
+- gizmo geometry against real Box2D shapes: every drawn segment must touch the shape and the space just outside it must be empty;
+- an inspector-metadata lint that uses the same member lookup the editor's attribute handlers use.
+
+The harness is a stand-in, and it can only be as faithful as its stubs. It does not replace building the real solution.
+
+---
+
+## Box2D-Packed
+
+[Box2D-Packed](https://github.com/crustos/box2d) is a fork of Box2D v3 (Erin Catto's, MIT) built for this kind of use:
+
+- **4-byte handles.** Dropping the world index and shrinking `index1` to 16 bits makes `b2ShapeId` 4 bytes instead of 8, so a handle fits a register and an
+  array of them packs twice as densely. The price is the 65,535 limit above, and a single world.
+- **Bit-packed definition structs**, which is what forces the shim.
+- **Intrusive execution.** `box2d_pack.py` can compile *game code written in C* into the physics engine at marked points (for example, when a contact begins),
+  so game logic runs where the engine produced the event instead of reading an event array afterwards. The fork's [paper](https://doi.org/10.5281/zenodo.23002562)
+  makes the case for this; **this repository has not measured it.** It is the reason the core is being moved to C, and the reason that is more than
+  an exercise.
+
+What this repository has measured, on one 2.1 GHz core, a pyramid of boxes, .NET 10 (`python3 build.py test --bench`):
+
+| bodies | native step, portable | native step, AVX2 | reading every transform back, batched | the same, one native call per body |
+|---:|---:|---:|---:|---:|
+| 5,050 | 2.86 ms | 2.26 ms | 0.07 ms | 0.21 ms |
+| 9,870 | 6.28 ms | 4.94 ms | 0.12 ms | 0.40 ms |
+
+A managed-to-native call costs about 6 ns. So the P/Invoke boundary is not where the time goes: the solver is. Batching is still about three times
+cheaper than per-body reads, but it saves tenths of a millisecond, not milliseconds, and `SuppressGCTransition` made no measurable difference. **There is no
+comparison with Jitter here**; the machine these were taken on could not restore the package to run it. The AVX2 build is about 21% faster than the portable
+one at 10k bodies, and is opt-in (`--avx2`) because it needs a CPU that has it.
+
+---
+
+## The core rewrite: C# to C
+
+### Why
+
+The physics now lives in C, but the game around it is C#: every event crosses a boundary, and a script is a managed object that C reaches through an id. The
+interesting version is the one where the engine core and the physics are the *same kind of code*, in one translation unit, so a contact handler is a function
+the physics engine calls. That needs the core in C. Writing it twice (C# for the editor, C for the player) means two cores that drift apart. So the plan is to
+write it once, in C#, in a subset that is mechanically translatable.
+
+### The pipeline
+
+```
+C#  --Roslyn-->  Crust C++ subset  --cpprust-->  C  --gcc-->  native
+    (CCSharp)                       (crust)
+```
+
+[CCSharp](https://github.com/crustos/CCSharp) is a C# cross-compiler on Roslyn. [Crust](https://github.com/brentharts/crust)'s `cpprust` lowers its C++ subset to plain
+C. There is no garbage collector and no .NET class library; the standard library is replaced by a small corelib (`CCSharp/corelib`) plus
+[coost](https://github.com/crustos/coost). A construct outside the subset is not mistranslated: **it is refused, by name and line**, so the scan below can
+count them.
+
+**The C# stays the source of truth.** The same files compile on .NET (that is how they run in the editor and in the tests) and through CCSharp. The generated C is
+never edited by hand, and a conformance test keeps the two honest.
+
+### What the subset is
+
+The subset is C# that does not need a runtime. The ones that matter for this code:
+
+- A **class is a single-owner value**, not a shared reference. Assigning one object to another, returning an existing one, or comparing two with `==` is refused,
+  because C# would alias and Crust would copy. There is no `null` for an owned class.
+- No `throw` / `try`, lambdas or delegates, `is` / `as` patterns, LINQ, generic *methods*, nested types, `params`, named or optional arguments, operator
+  overloads, `in` parameters, or inline `out var`. Interfaces are limited (an explicit interface implementation, or `base.M()`, is refused).
+- `new T[n]` of a struct is refused (the elements would be null); use a `List<T>` or an arena. A float cannot be *printed*, though it can be computed.
+
+Most of that is what makes the C small and predictable: no runtime to carry, no hidden allocation, no exceptions to unwind.
+
+### What is proven
+
+`python3 build.py ccsharp` translates `Pose2D`, `Collider2DGeometry` and `Collider2DOutline` (about 340 lines, including the port of Box2D's hull code), builds them
+with gcc, and runs a program over 600 hull cases, every outline type and the geometry and pose maths. The same program runs on .NET. **The two outputs are
+identical.** That is the whole claim: those three files run as C.
+
+### What is not
+
+`python3 build.py scan` asks the compiler about the rest, in tiers. Today **3 of 14 files translate unchanged (343 of 2,008 lines, 17%)**. The counts are a lower
+bound, because a refusal at a declaration can stop the compiler before it reaches the bodies; each round of fixes reveals the next layer. After clearing the cheap
+ones (small structs passed by value, `out` declarations hoisted, default parameters turned into overloads), what is left has one cause:
+
+> **Objects refer to objects.** The slot registry, the simulation and the components hold references to each other, compare them with `==`, and use `null`. Crust
+> classes are single-owner values, so none of that translates.
+
+The planned fix is a handle design rather than more local edits. The simulation and the registry would deal only in integer handles:
+
+```csharp
+// a sketch of the plan; not written yet
+struct ColliderHandle { public int Index; public int Generation; }
+
+bool Alive(ColliderHandle h) { return generations[h.Index] == h.Generation; }   // replaces ReferenceEquals and the quarantine list
+```
+
+A stale handle is then an integer mismatch. That replaces both the `ReferenceEquals` liveness checks and the quarantine that stops a freed slot being reused
+mid-dispatch, and it makes `SlotRegistry` and `PhysicsSimulation2D` translatable. The object tables move to the engine layer, which stays ordinary C#. The
+native calls (`PB2`) already *are* the C shim, so in a C build they become direct calls.
+
+### Two builds, one API
+
+The intended end state is two builds of the same engine:
+
+| | managed build | packed C build |
+|---|---|---|
+| what runs | .NET: the editor, play mode, hot-reloading scripts | the core as C, in one unit with Box2D-Packed |
+| exists today | yes (this is what the tests exercise) | **no**: only the math tier translates |
+| scripts | any C# | the subset |
+
+Hot reload and arbitrary C# stay in the managed build. The packed build is for shipping. How much of a typical game script fits the subset is an open question
+this project has not answered yet.
+
+### What came out of it for CCSharp
+
+Running real code through the compiler found real bugs, fixed in [CCSharp](https://github.com/crustos/CCSharp) with tests that compare against real .NET:
+on .NET SDK 9 and later CCSharp's own test suite could not run (every indexer failed to bind); a compiler crash when a base class is in a different file from
+an upcast; `float %` was emitted verbatim, which C rejects; and the corelib was missing `MathF`, `Math.Clamp`, trig functions and several overloads. One
+limit is in Crust itself: `Add(list, xy[i])` leaves the element access unlowered when a list is also an argument, so the 2D code reads elements into locals
+first. Details and the full scan are in [tools/ccsharp/README.md](tools/ccsharp/README.md).
+
+---
+
+## Building
+
+Box2D and CCSharp are **not** part of this repository. They are cloned next to it, the way CCSharp itself expects `crust` and `coost`:
 
 ```
 parent/
   Prowl/      this repository
   box2d/      https://github.com/crustos/box2d
+  CCSharp/    https://github.com/crustos/CCSharp      (only for scan / ccsharp)
+  crust/      https://github.com/brentharts/crust     (cloned by CCSharp's own build.py)
+  coost/      https://github.com/crustos/coost        (ditto)
 ```
 
-1. Clone the repo, then `python3 build.py deps` to clone `../box2d` (needs `git`)
-2. `python3 build.py` builds the native physics library (needs `cmake` and a C compiler) and then the managed solution (needs the .NET SDK)
-3. Open `Prowl.slnx` with your editor ([Visual Studio Version 17.8.0+](https://visualstudio.microsoft.com/vs/preview/), [VSCode](https://code.visualstudio.com/), [Rider](https://www.jetbrains.com/rider/), etc.)
+You need `python3`, `git`, `cmake`, a C compiler, and the [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/10.0).
 
-`python3 build.py -h` lists everything it can do: run the 2D physics tests (`test`), check the 3D switch (`check3d`), and measure how much of the 2D engine CCSharp can translate to C (`scan`).
+```sh
+python3 build.py deps          # clone ../box2d
+python3 build.py               # native 2D physics library, then `dotnet build Prowl.slnx`
+python3 build.py test          # the 261 checks (builds the native library first)
+```
 
-#### 3D physics
+| command | what it does |
+|---|---|
+| `all` (default) | native library, then the managed solution, 2D only |
+| `deps [--ccsharp]` | clone `../box2d` (and `../CCSharp` with its `crust` and `coost`) |
+| `native [--avx2]` | build Box2D-Packed and the shim into one shared library and install it under `Libraries/<rid>/native` (git-ignored) |
+| `managed` | `dotnet build Prowl.slnx` |
+| `test [--managed] [--bench]` | the 2D physics tests; `--managed` also runs `Prowl.Runtime.Test` |
+| `scan [-- -v --json f]` | how much of the 2D engine CCSharp can translate, and what refuses |
+| `ccsharp` | translate the 2D math to C, build it, run it, and diff with real .NET |
+| `check3d` | does the 3D on/off switch still hold? (needs no NuGet) |
+| `status`, `clean` | where everything was found; remove what the script built |
 
-3D physics (Jitter2) is still in the tree, but it is **off by default and not maintained**: it is there for someone else to take over. Build with it using `python3 build.py --3d`, or `dotnet build -p:ProwlPhysics3D=true`. `python3 build.py check3d` verifies that the seam between the two builds still holds.
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+`--3d` adds the unmaintained 3D physics to any of these (see [3D.md](3D.md)). `python3 build.py -h` has the rest.
 
-# <span align="center">🤝 Contributing 🤝</span>
-
-Check our [Contributing guide](https://github.com/ProwlEngine/Prowl/blob/main/CONTRIBUTING.md) to see how to be part of this team.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-# <span align="center">🙏 Acknowledgments 🙏</span>
-
-- Hat tip to the creators of [Raylib](https://github.com/raysan5/raylib), While we are no longer based upon it, it has shaved off hours of development time getting the engine to a usable state.
-
-## Contributors 🌟
-
-- [Michael (Wulferis)](https://twitter.com/Wulferis)
-- [Abdiel Lopez (PaperPrototype)](https://github.com/PaperPrototype)
-- [Josh Davis](https://github.com/10xJosh)
-- [ReCore67](https://github.com/recore67)
-- [Isaac Marovitz](https://github.com/IsaacMarovitz)
-- [Kuvrot](https://github.com/Kuvrot)
-- [JaggerJo](https://github.com/JaggerJo)
-- [Jihad Khawaja](https://github.com/jihadkhawaja)
-- [Jasper Honkasalo](https://github.com/japsuu)
-- [Kai Angulo (k0t)](https://github.com/sinnwrig)
-- [Bruno Massa](https://github.com/brmassa)
-- [Mark Saba (ZeppelinGames)](https://github.com/ZeppelinGames)
-- [Chandler Cox (Tryibion)](https://github.com/Tryibion)
-- [EJTP (Unified)](https://github.com/EJTP)
-- [Paolo (xZekro51)](https://github.com/xZekro51)
-- [Kouame Benoit Junior Augustin (ZedDevStuff)](https://github.com/ZedDevStuff)
-
-## Dependencies 📦
-
-- [Silk.NET](https://github.com/dotnet/Silk.NET) - Windowing, Input, OpenGL & Audio Bindings
-- [Jitter Physics 2](https://github.com/notgiven688/jitterphysics2) - Physics Engine
-- [Magick.NET](https://github.com/dlemstra/Magick.NET) - Image Processing
-- [Prowl.Echo](https://github.com/ProwlEngine/Anthology) - Serialization
-- [Prowl.Paper](https://github.com/ProwlEngine/Anthology) - UI Framework
-- [Prowl.Origami](https://github.com/ProwlEngine/Anthology) - Component Library for Paper
-- [Prowl.Quill](https://github.com/ProwlEngine/Anthology) - Vector Graphics & Text Rendering
-- [Prowl.Scribe](https://github.com/ProwlEngine/Anthology) - TrueType font parsing, glyph rasterization & markdown layout
-- [Prowl.Rosetta](https://github.com/ProwlEngine/Anthology) - For Editor Localisation
-- [Prowl.Vector](https://github.com/ProwlEngine/Anthology) - 64-bit Math Library
-- [Prowl.Unwrapper](https://github.com/ProwlEngine/Anthology) - UV Unwrapper
-- [Prowl.Photonic](https://github.com/ProwlEngine/Anthology) - Progressive Lightmapper
-- [Prowl.Clay](https://github.com/ProwlEngine/Anthology) - Model Importing (GLTF, GLB, OBJ, FBX)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-# <span align="center">📜 License 📜</span>
-
-Distributed under the MIT License. See [LICENSE](https://github.com/ProwlEngine/Prowl/blob/main/LICENSE) for more information.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+**Please run a real `dotnet build` first.** Everything outside the engine itself was verified: the native library, the 2D layer through the harness, the 3D switch with
+Roslyn against reference assemblies, and CCSharp's 73 tests from a fresh clone. The editor changes, the edits to existing engine files (`MonoBehaviour`,
+`SceneDispatcher`, `Scene`), and `Prowl.Analyzers` have not been compiled for real, because the machine they were written on could not reach NuGet.
 
 ---
 
-### [Join our Discord server! 🎉](https://discord.gg/BqnJ9Rn4sn)
-[![Discord](https://img.shields.io/discord/1151582593519722668?logo=discord
-)](https://discord.gg/BqnJ9Rn4sn)
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/R7B4280JI3)
+## Repository map
 
+| path | what is there |
+|---|---|
+| `Prowl.Runtime/Physics2D/` | the engine-independent 2D core: simulation, slot registry, pose interpolation, collider geometry and outlines |
+| `Prowl.Runtime/Physics2D/Native/` | the C# bindings to the shim (no other Prowl dependency) |
+| `Prowl.Runtime/Physics2D/Engine/` | `PhysicsWorld2D` and the public types: `Collision2D`, `RaycastHit2D`, `QueryFilter2D` |
+| `Prowl.Runtime/Components/Physics2D/` | `Rigidbody2D` and the colliders |
+| `Prowl.Runtime/PhysicsCommon/` | what 2D and 3D share (collision matrix, force modes) |
+| `Native/Box2D/` | the C shim, its CMake project, and the test harness |
+| `tools/ccsharp/` | the translatability scan and the C-vs-.NET conformance test |
+| `tools/check_physics3d.py` | the 3D switch checker |
+| `Prowl.Runtime/Physics/`, `Components/Physics/` | 3D physics; compiled only with `--3d` |
+| `build.py` | the build script |
+
+---
+
+## Roadmap
+
+Roughly in order, and honest about what is a guess.
+
+1. **A real build.** `dotnet build Prowl.slnx` and `dotnet test` on a machine with NuGet, fixing whatever the harness could not see.
+2. **A 2D sample scene**, and the pieces a 2D game reaches for first: joints, a tilemap, one-sided platforms.
+3. **The handle redesign** of the registry and simulation, until `scan` reports them translatable and `build.py ccsharp` runs them as C beside the math.
+4. **The core into the subset**: transforms, the component lifecycle and event dispatch, tier by tier, each one gated by the conformance test.
+5. **A packed C build**, with game code compiled into Box2D-Packed at its injection points. This is where the paper's claim gets measured here.
+6. **Open:** how much ordinary game-script C# fits the subset, and what the authoring story is when it does not.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Two things are useful beyond the usual: run `python3 build.py check3d` after a change, so the 3D switch does not rot, and run
+`python3 build.py scan` to see whether a change moved the translatable fraction.
+
+## Acknowledgments
+
+Prowl is [ProwlEngine/Prowl](https://github.com/ProwlEngine/Prowl) (copyright Michael Sakharov, see [LICENSE](LICENSE)) and its contributors, and this fork is built on that work. The editor, renderer, audio, UI and asset
+pipeline are theirs. Box2D is by Erin Catto. [Crust](https://github.com/brentharts/crust) and the Box2D-Packed additions (`box2d_pack.py`, intrusive execution, the 4-byte handles) are by Brent Hartshorn. Hat tip to
+[Raylib](https://github.com/raysan5/raylib), which shaved hours off Prowl's early development.
+
+### Upstream contributors
+
+[Michael (Wulferis)](https://twitter.com/Wulferis), [Abdiel Lopez (PaperPrototype)](https://github.com/PaperPrototype), [Josh Davis](https://github.com/10xJosh),
+[ReCore67](https://github.com/recore67), [Isaac Marovitz](https://github.com/IsaacMarovitz), [Kuvrot](https://github.com/Kuvrot), [JaggerJo](https://github.com/JaggerJo),
+[Jihad Khawaja](https://github.com/jihadkhawaja), [Jasper Honkasalo](https://github.com/japsuu), [Kai Angulo (k0t)](https://github.com/sinnwrig),
+[Bruno Massa](https://github.com/brmassa), [Mark Saba (ZeppelinGames)](https://github.com/ZeppelinGames), [Chandler Cox (Tryibion)](https://github.com/Tryibion),
+[EJTP (Unified)](https://github.com/EJTP), [Paolo (xZekro51)](https://github.com/xZekro51), [Kouame Benoit Junior Augustin (ZedDevStuff)](https://github.com/ZedDevStuff)
+
+### Dependencies
+
+- [Box2D-Packed](https://github.com/crustos/box2d) - 2D physics (native, built from source beside this repo)
+- [Silk.NET](https://github.com/dotnet/Silk.NET) - windowing, input, OpenGL and audio bindings
+- [Jitter Physics 2](https://github.com/notgiven688/jitterphysics2) - 3D physics, only with `--3d`
+- [Magick.NET](https://github.com/dlemstra/Magick.NET) - image processing
+- [Prowl.Echo](https://github.com/ProwlEngine/Anthology) (serialization), Paper / Origami / Quill / Scribe (UI and text), Rosetta (editor localisation), Vector (math), Unwrapper, Photonic, Clay
+- Build-time tooling only: [CCSharp](https://github.com/crustos/CCSharp), [Crust](https://github.com/brentharts/crust), [coost](https://github.com/crustos/coost)
+
+## License
+
+MIT, see [LICENSE](LICENSE).

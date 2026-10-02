@@ -79,6 +79,56 @@ internal static class DefaultGameObjectCreators
         }
     }
 
+    // 2D physics. A collider with a Rigidbody2D is simulated; without one it is static level geometry.
+
+    [MenuItem("GameObject/2D Physics/Static Box", priority: 50, Icon = EditorIcons.Square, Separator = true)]
+    static void CreateStaticBox2D()
+    {
+        var go = HierarchyPanel.CreateGameObject("Static Box", MenuContext.ActiveGameObject);
+        go.AddComponent<BoxCollider2D>();
+    }
+
+    [MenuItem("GameObject/2D Physics/Dynamic Box", priority: 51, Icon = EditorIcons.Square)]
+    static void CreateDynamicBox2D()
+    {
+        var go = HierarchyPanel.CreateGameObject("Dynamic Box", MenuContext.ActiveGameObject);
+        go.AddComponent<Rigidbody2D>();
+        go.AddComponent<BoxCollider2D>();
+    }
+
+    [MenuItem("GameObject/2D Physics/Dynamic Ball", priority: 52, Icon = EditorIcons.Circle)]
+    static void CreateDynamicBall2D()
+    {
+        var go = HierarchyPanel.CreateGameObject("Dynamic Ball", MenuContext.ActiveGameObject);
+        go.AddComponent<Rigidbody2D>();
+        go.AddComponent<CircleCollider2D>();
+    }
+
+    [MenuItem("GameObject/2D Physics/Dynamic Capsule", priority: 53, Icon = EditorIcons.Shapes)]
+    static void CreateDynamicCapsule2D()
+    {
+        var go = HierarchyPanel.CreateGameObject("Dynamic Capsule", MenuContext.ActiveGameObject);
+        go.AddComponent<Rigidbody2D>();
+        go.AddComponent<CapsuleCollider2D>();
+    }
+
+    [MenuItem("GameObject/2D Physics/Edge (Terrain)", priority: 54, Icon = EditorIcons.VectorSquare)]
+    static void CreateEdge2D()
+    {
+        var go = HierarchyPanel.CreateGameObject("Edge", MenuContext.ActiveGameObject);
+        var edge = go.AddComponent<EdgeCollider2D>();
+        edge.Points = [new Float2(-5f, 0f), new Float2(5f, 0f)];
+    }
+
+    [MenuItem("GameObject/2D Physics/Trigger Zone", priority: 55, Icon = EditorIcons.BorderAll)]
+    static void CreateTriggerZone2D()
+    {
+        var go = HierarchyPanel.CreateGameObject("Trigger Zone", MenuContext.ActiveGameObject);
+        var box = go.AddComponent<BoxCollider2D>();
+        box.Size = new Float2(4f, 4f);
+        box.IsTrigger = true;
+    }
+
     [MenuItem("GameObject/Light/Directional Light", priority: 30, Icon = EditorIcons.Sun)]
     static void CreateDirectionalLight()
     {

@@ -37,7 +37,7 @@ public struct ParticleCollisionEvent
     /// <summary>World velocity of the particle after the bounce, including animated velocity.</summary>
     public Float3 Velocity;
     /// <summary>The collider hit, null for planes and for geometry no collider owns.</summary>
-    public Collider? Collider;
+    public ParticleCollider? Collider;
     /// <summary>The transform of what was hit.</summary>
     public Transform? Transform;
 
@@ -109,7 +109,7 @@ public class CollisionModule : ParticleSystemModule
         public bool HasSurface;
         public Float3 Point;
         public Float3 Normal;
-        public Collider? Collider;
+        public ParticleCollider? Collider;
         public Transform? Transform;
         public long Frame;
     }
@@ -125,7 +125,7 @@ public class CollisionModule : ParticleSystemModule
     /// the first surface in the way. Returns true when the hit should be reported, false for no hit or for
     /// a particle that is only resting on a surface.
     /// </summary>
-    internal bool Apply(ParticleSystemComponent system, PhysicsWorld? physics, ref Particle p, Float3 previous, out ParticleCollisionEvent collision)
+    internal bool Apply(ParticleSystemComponent system, ParticlePhysicsWorld? physics, ref Particle p, Float3 previous, out ParticleCollisionEvent collision)
     {
         collision = default;
 
@@ -180,8 +180,9 @@ public class CollisionModule : ParticleSystemModule
         return true;
     }
 
-    private bool SweepWorld(PhysicsWorld? physics, Float3 from, Float3 to, float radius, ref ParticleCollisionEvent collision, out Float3 center, out bool touching)
+    private bool SweepWorld(ParticlePhysicsWorld? physics, Float3 from, Float3 to, float radius, ref ParticleCollisionEvent collision, out Float3 center, out bool touching)
     {
+#if PROWL_PHYSICS_3D
         center = default;
         touching = false;
         if (physics == null) return false;
@@ -207,10 +208,17 @@ public class CollisionModule : ParticleSystemModule
         collision.Collider = hit.Collider;
         collision.Transform = hit.Transform;
         return true;
+#else
+        // Particles do not collide with the 2D world yet.
+        center = default;
+        touching = false;
+        return false;
+#endif
     }
 
-    private bool SweepCached(PhysicsWorld? physics, Float3 from, Float3 to, float radius, ref ParticleCollisionEvent collision, out Float3 center, out bool touching)
+    private bool SweepCached(ParticlePhysicsWorld? physics, Float3 from, Float3 to, float radius, ref ParticleCollisionEvent collision, out Float3 center, out bool touching)
     {
+#if PROWL_PHYSICS_3D
         center = default;
         touching = false;
         if (physics == null) return false;
@@ -258,6 +266,12 @@ public class CollisionModule : ParticleSystemModule
         collision.Collider = surface.Collider;
         collision.Transform = surface.Transform;
         return true;
+#else
+        // Particles do not collide with the 2D world yet.
+        center = default;
+        touching = false;
+        return false;
+#endif
     }
 
     /// <summary>Which of the six axis directions <paramref name="direction"/> leans toward most.</summary>

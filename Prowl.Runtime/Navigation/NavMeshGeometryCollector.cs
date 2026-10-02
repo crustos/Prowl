@@ -62,11 +62,13 @@ public static class NavMeshGeometryCollector
                 foreach (MeshRenderer renderer in go.GetComponents<MeshRenderer>())
                     CollectMeshRenderer(renderer, area, results, bounds);
             }
+#if PROWL_PHYSICS_3D
             else
             {
                 foreach (Collider collider in go.GetComponents<Collider>())
                     CollectCollider(collider, area, results, bounds);
             }
+#endif
 
             // Terrain contributes in both modes, read from its heightmap asset either way — the
             // collider builds its heightfield from that same asset, and reading the asset is what
@@ -76,8 +78,14 @@ public static class NavMeshGeometryCollector
             // collider-less object is.
             foreach (TerrainComponent terrain in go.GetComponents<TerrainComponent>())
             {
+#if PROWL_PHYSICS_3D
                 if (geometry != NavMeshCollectGeometry.RenderMeshes && go.GetComponent<TerrainCollider>().IsNotValid())
                     continue;
+#else
+                // Collider-mode bakes need a 3D collider to say the terrain is ground; there are none without 3D physics.
+                if (geometry != NavMeshCollectGeometry.RenderMeshes)
+                    continue;
+#endif
 
                 CollectTerrain(terrain, voxelSize, area, results, bounds);
             }
@@ -261,6 +269,7 @@ public static class NavMeshGeometryCollector
         AddMesh(renderer.Mesh, renderer.Transform.LocalToWorldMatrix, area, results, bounds);
     }
 
+#if PROWL_PHYSICS_3D
     /// <summary>
     /// Collect one collider as triangles. Primitive colliders tessellate to the same shape the
     /// physics engine uses (capsules included); mesh colliders share the mesh's vertex array and
@@ -312,6 +321,7 @@ public static class NavMeshGeometryCollector
             primitive.Dispose();
         }
     }
+#endif
 
     /// <summary>A mesh's triangles, after testing its transformed bounds against the filter.</summary>
     private static void AddMesh(Mesh? mesh, Float4x4 world, int area, List<NavMeshGeometrySource> results, AABB? bounds)
@@ -460,6 +470,7 @@ public static class NavMeshGeometryCollector
         return result;
     }
 
+#if PROWL_PHYSICS_3D
     /// <summary>World matrix for a collider's shape: the collider's Center/Rotation offsets
     /// composed with the GameObject's world TRS (same composition as the collider gizmo).</summary>
     private static Float4x4 ColliderWorldMatrix(Collider collider)
@@ -470,4 +481,5 @@ public static class NavMeshGeometryCollector
             collider.Transform.Rotation * Quaternion.FromEuler(collider.Rotation),
             collider.Transform.LossyScale);
     }
+#endif
 }

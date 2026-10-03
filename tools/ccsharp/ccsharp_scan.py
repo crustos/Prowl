@@ -3,7 +3,7 @@
 
 CCSharp (https://github.com/crustos/CCSharp) is a whole-program compiler: C# -> Crust C++ subset -> C. It stops at the first
 Roslyn error, and only reports what is outside the Crust subset once the program binds. Prowl's 2D code names types that
-CCSharp's corelib has never heard of (Float2, MonoBehaviour, the Box2D wrapper), so pointing the compiler straight at it
+CCSharp's corelib has never heard of (Float2, MonoBehaviour ...), so pointing the compiler straight at it
 reports nothing useful. This script builds an OVERLAY that makes it bind, then runs the compiler and sorts what it says.
 
     python3 tools/ccsharp/ccsharp_scan.py overlay                 write the overlay to /tmp/prowl-ccs-overlay (and stop)
@@ -16,7 +16,7 @@ The overlay is a COPY of CCSharp's corelib (never edited in place) plus two kind
                    without [Cpp], so using one is refused BY NAME: that is the "corelib gap" row of the report. Each is added
                    only if the corelib does not already have it, so the overlay shrinks as CCSharp grows.
   * context        subset C# with trivial bodies that stands in for what the C core would provide: the math structs, the engine
-                   types (MonoBehaviour, GameObject, Transform ...) and the native Box2D calls (generated from the real PB2.cs).
+                   types (MonoBehaviour, GameObject, Transform ...); the native Box2D calls are the generated C-flavor bindings, in the corelib copy.
                    Compiled with the program and never reported on, so what is reported is the 2D code's OWN constructs: how it
                    uses those types still counts (a generic method, a null, a lambda), what they are does not.
 
@@ -27,6 +27,7 @@ CCSharp, crust and coost are cloned beside this repository (see `python3 build.p
 """
 import argparse
 import collections
+import glob
 import json
 import os
 import re
@@ -36,6 +37,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 PROWL = os.path.dirname(os.path.dirname(HERE))
 RUNTIME = os.path.join(PROWL, "Prowl.Runtime")
 DEFAULT_OVERLAY = os.path.join(tempfile.gettempdir(), "prowl-ccs-overlay")
@@ -57,17 +59,38 @@ def rt(*parts):
     return os.path.join(RUNTIME, *parts)
 
 
+def CORE2D_FILES():
+    """Everything the 2D runtime is made of, in build order, read from Prowl.Core2D/Prowl.Core2D.csproj: the one list both the .NET build and the C
+    build use. Items marked CBuild="false" (the .NET-only native bindings) are left out: the C build uses the generated C flavor."""
+    proj = os.path.join(PROWL, "Prowl.Core2D", "Prowl.Core2D.csproj")
+    with open(proj, encoding="utf-8") as f:
+        text = f.read()
+    files = []
+    for m in re.finditer(r'<Compile\s+Include="([^"]+)"([^>]*)/>', text):
+        if 'CBuild="false"' in m.group(2):
+            continue
+        files.append(os.path.normpath(os.path.join(os.path.dirname(proj), m.group(1).replace("\\", os.sep))))
+    return files
+
+
+def c2(*parts):
+    """A file of Prowl.Core2D, the translatable 2D runtime (nodes, scene, components, physics components)."""
+    return os.path.join(PROWL, "Prowl.Core2D", *parts)
+
+
 # A tier is a set of files scanned TOGETHER (the compiler is whole-program). Later tiers include the earlier ones as context
 # so that their types bind, but only the tier's own files are reported on.
 TIERS = [
     ("math", "engine-independent geometry, outlines and pose maths",
      [rt("Physics2D", f) for f in ("Pose2D.cs", "Collider2DGeometry.cs", "Collider2DOutline.cs")]),
-    ("registry", "the body / collider slot registry",
-     [rt("Physics2D", "SlotRegistry.cs")]),
-    ("simulation", "the simulation core: stepping, ownership, events, queries",
-     [rt("Physics2D", "PhysicsSimulation2D.cs")]),
-    ("engine", "the engine-facing world and components",
-     [rt("Physics2D", "Engine", "PhysicsWorld2D.cs"), rt("Physics2D", "Engine", "Physics2DTypes.cs")]
+    ("tables", "the integer core: handle table and active-trigger set (only indices)",
+     [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs")]),
+    ("registry", "the arena registry: bodies and joints as small records that point at each other",
+     [rt("Physics2D", f) for f in ("MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs")]),
+    ("core", "the simulation core: native world, step, pose writes, the event stream, queries (through the generated bindings)",
+     [rt("Physics2D", "SimCore2D.cs")]),
+    ("engine", "the engine layer: host objects, event dispatch, scene ownership, the world and the components",
+     [rt("Physics2D", "HostTable.cs"), rt("Physics2D", "PhysicsSimulation2D.cs"), rt("Physics2D", "Engine", "PhysicsWorld2D.cs"), rt("Physics2D", "Engine", "Physics2DTypes.cs")]
      + [rt("Components", "Physics2D", f) for f in ("Rigidbody2D.cs", "Collider2D.cs", "CircleCollider2D.cs", "BoxCollider2D.cs",
                                                   "CapsuleCollider2D.cs", "PolygonCollider2D.cs", "EdgeCollider2D.cs")]),
 ]
@@ -255,55 +278,6 @@ CONTEXT_SCENE_STUB = """
 namespace Prowl.Runtime.Resources { public class Scene : Prowl.Runtime.EngineObject {} }
 """
 
-# What the simulation tier calls on the managed Box2D wrapper. Signatures only; the C build calls the shim (pb2_*) directly.
-CONTEXT_NATIVE_WRAPPER = """
-using System;
-namespace Prowl.Runtime.Physics2D.Native {
-  public ref struct StepEvents {
-    public ReadOnlySpan<PB2BodyMove> Moves;
-    public ReadOnlySpan<PB2ContactEvent> Contacts;
-    public ReadOnlySpan<PB2SensorEvent> Sensors;
-    public int BeginCount;
-    public int AwakeBodyCount;
-    public ReadOnlySpan<PB2ContactEvent> ContactBegins { get { return Contacts; } }
-    public ReadOnlySpan<PB2ContactEvent> ContactEnds { get { return Contacts; } }
-  }
-  public sealed class Box2DWorld : IDisposable {
-    public static bool Exists { get { return false; } }
-    public static Box2DWorld Create(float gx, float gy, int workers) { return new Box2DWorld(); }
-    public void SetGravity(float x, float y) {}
-    public void SetLayerMatrix(ReadOnlySpan<uint> rows) {}
-    public void QueueTransform(uint body, float x, float y, float angle, bool kinematicTarget) {}
-    public StepEvents Step(float dt, int subSteps) { return new StepEvents(); }
-    public bool Raycast(float ox, float oy, float dx, float dy, float maxDistance, uint layerMask, bool hitSensors, out PB2RayHit hit) { hit = new PB2RayHit(); return false; }
-    public int RaycastAll(float ox, float oy, float dx, float dy, float maxDistance, uint layerMask, bool hitSensors, Span<PB2RayHit> results) { return 0; }
-    public int OverlapPoint(float x, float y, uint layerMask, bool hitSensors, Span<int> colliders) { return 0; }
-    public int OverlapCircle(float cx, float cy, float radius, uint layerMask, bool hitSensors, Span<int> colliders) { return 0; }
-    public int OverlapBox(float cx, float cy, float halfW, float halfH, float angle, uint layerMask, bool hitSensors, Span<int> colliders) { return 0; }
-    public void Dispose() {}
-  }
-}
-"""
-
-
-def gen_pb2_context():
-    """The PB2 structs, enums and static methods, generated from the real PB2.cs so they cannot drift from it. Every
-    [LibraryImport] method becomes a method with a trivial body; the structs are copied as they are."""
-    with open(rt("Physics2D", "Native", "PB2.cs"), encoding="utf-8-sig") as f:
-        text = f.read()
-    head, _, tail = text.partition("internal static unsafe partial class PB2")
-    head = re.sub(r"^using System\.Runtime\.[\w.]+;\s*$", "", head, flags=re.M)
-    head = re.sub(r"\[StructLayout\([^\]]*\)\]\s*", "", head)
-    head = head.replace("internal ", "public ")
-    methods = []
-    for m in re.finditer(r"\[LibraryImport\([^\]]*\)\]\s*public static partial (?P<ret>[\w*]+) (?P<name>\w+)\((?P<params>[^)]*)\);", tail):
-        ret = m.group("ret")
-        body = "" if ret == "void" else ("return 0;" if ret in ("int", "uint") else "return default(%s);" % ret)
-        methods.append("    public static %s %s(%s) { %s }" % (ret, m.group("name"), m.group("params"), body))
-    consts = "\n".join("    " + l.strip() for l in tail.splitlines() if re.match(r"\s*public const ", l))
-    return head + "\npublic static unsafe class PB2 {\n" + consts + "\n" + "\n".join(methods) + "\n}\n", len(methods)
-
-
 def corelib_text(corelib_dir):
     out = []
     for dp, _, fn in os.walk(corelib_dir):
@@ -377,14 +351,19 @@ def make_overlay(out=DEFAULT_OVERLAY, verbose=False):
 
     ctx = os.path.join(out, "context")
     os.makedirs(ctx)
-    pb2, n_pb2 = gen_pb2_context()
-    files = {"base": CONTEXT_BASE, "pb2": pb2, "native_wrapper": CONTEXT_NATIVE_WRAPPER, "engine": CONTEXT_ENGINE, "scene_stub": CONTEXT_SCENE_STUB}
+    # The native API is the generated C flavor, in the corelib copy: the only place `extern` and [Cpp] are legal, and exactly the file the C build
+    # compiles against, so what the scan binds is what will run.
+    import gen_pb2
+    model = gen_pb2.parse_header()
+    with open(os.path.join(corelib, "prowl_pb2_bindings.cs"), "w", encoding="utf-8") as f:
+        f.write(gen_pb2.emit_c(model))
+    files = {"base": CONTEXT_BASE, "engine": CONTEXT_ENGINE, "scene_stub": CONTEXT_SCENE_STUB}
     paths = {}
     for k, text in files.items():
         paths[k] = os.path.join(ctx, "prowl_%s.cs" % k)
         with open(paths[k], "w", encoding="utf-8") as f:
             f.write(text)
-    notes.append("PB2 context generated from PB2.cs (%d native methods)" % n_pb2)
+    notes.append("PB2 bindings: the generated C flavor, %d native functions" % len(model.functions))
     if verbose:
         print("overlay written to %s" % out)
         for n in notes:
@@ -488,7 +467,20 @@ def loc(path):
     return n
 
 
-def scan_tier(name, files, corelib, context, extra_context=()):
+def type_defined_in(name, paths):
+    """Whether some file in `paths` declares a type called `name` (the last segment of a dotted name)."""
+    short = re.escape(name.split(".")[-1])
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                if re.search(r"\b(class|struct|interface|enum|record)\s+%s\b" % short, f.read()):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def scan_tier(name, files, corelib, context, extra_context=(), unavailable=()):
     # `context` is a list of files; `extra_context` the earlier tiers' program files
     """Compile the tier's files with its context. Files whose Roslyn errors block binding are dropped (and what they needed is
     reported) until the rest binds; the survivors then yield the compiler's own refusals."""
@@ -505,9 +497,28 @@ def scan_tier(name, files, corelib, context, extra_context=()):
                 bad.setdefault(f, []).append((ln, code, msg))
             drop = [f for f in live if f in bad]
             if not drop:
-                # the errors are in context files or the facade: nothing of the tier's to drop
+                # The errors are all in context files (the overlay, the generated PB2, the engine stand-ins): nothing of the tier's
+                # was even looked at. That is a broken scanner, NOT a clean tier -- an earlier version marked every file of the tier
+                # CLEAN here, which is how a context that stopped compiling turned into a report of 83% translatable.
+                #
+                # One legitimate case: the stand-ins name a type that a file of the program defines, and that file is itself blocked and so
+                # was left out (the engine stand-ins mention PhysicsWorld2D, which lives in a file that needs the simulation). Then the
+                # tier is blocked BY that type, and says so. Anything else is still a broken scanner.
+                gone = list(unavailable) + [f for f in blocked]
+                unexplained, explained = [], []
                 for f, es in bad.items():
-                    blocked.setdefault("(context) " + os.path.relpath(f, PROWL), es)
+                    where = os.path.relpath(f, PROWL) if f.startswith(PROWL) else f
+                    for ln, code, msg in es:
+                        m = re.search(r"'([^']+)'", msg)
+                        if code in ("CS0234", "CS0246") and m and type_defined_in(m.group(1), gone):
+                            explained.append((ln, code, msg))
+                        else:
+                            unexplained.append("%s:%d: %s %s" % (where, ln, code, msg[:150]))
+                if unexplained or not explained:
+                    raise ScanError("the %s tier's context does not compile, so none of its files were checked:\n   %s"
+                                    % (name, "\n   ".join(unexplained[:8])))
+                for f in live:
+                    blocked[f] = explained
                 live = []
                 break
             for f in drop:
@@ -546,9 +557,7 @@ def scan_tier(name, files, corelib, context, extra_context=()):
 def tier_context(name, paths):
     """The context a tier needs: always the base + generated PB2; the managed Box2D wrapper for the simulation and engine tiers; and the
     Scene/SceneDispatcher stand-ins that name PhysicsWorld2D / Collider2D only where those are part of the program."""
-    ctx = [paths["base"], paths["pb2"]] + REAL_CONTEXT
-    if name in ("simulation", "engine"):
-        ctx.append(paths["native_wrapper"])
+    ctx = [paths["base"]] + REAL_CONTEXT
     ctx.append(paths["engine"] if name == "engine" else paths["scene_stub"])
     return ctx
 
@@ -557,6 +566,7 @@ def cmd_scan(args):
     corelib, paths, notes = make_overlay(args.overlay, verbose=args.verbose)
     report = []
     done_files = []
+    never_bound = []   # files of earlier tiers that did not bind: left out of every later tier's context
     try:
         for name, desc, files in TIERS:
             if args.tier and name not in args.tier:
@@ -564,9 +574,13 @@ def cmd_scan(args):
                 continue
             # earlier tiers' files are context for later ones, so the types they define bind
             prior = [f for f in done_files if f not in files]
-            rows = scan_tier(name, files, corelib, tier_context(name, paths), extra_context=prior)
+            rows = scan_tier(name, files, corelib, tier_context(name, paths), extra_context=prior, unavailable=never_bound)
             report.append({"tier": name, "description": desc, "files": rows})
-            done_files += files
+            # A file that did not bind cannot be context for the next tier: leaving it in made every later tier fail on ITS errors. Without
+            # it, whatever needs its types is reported as blocked by them, which is the true state of affairs.
+            blocked_here = {os.path.join(PROWL, r["file"]) for r in rows if r["status"] == "blocked"}
+            never_bound += [f for f in files if f in blocked_here]
+            done_files += [f for f in files if f not in blocked_here]
     except ScanError as e:
         print("ccsharp_scan: SCAN FAILED (not a result): %s" % e)
         return 2
@@ -623,22 +637,50 @@ def print_report(report, args):
 CONFORMANCE = [
     ("math", "MathConformance", [rt("Physics2D", f) for f in ("Pose2D.cs", "Collider2DGeometry.cs", "Collider2DOutline.cs")],
      os.path.join(HERE, "conformance", "MathConformance.cs")),
+    ("handles", "HandleConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs")],
+     os.path.join(HERE, "conformance", "HandleConformance.cs")),
+    ("registry", "RegistryConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs", "Pose2D.cs")],
+     os.path.join(HERE, "conformance", "RegistryConformance.cs")),
+    # tier 1 of the 2D runtime: the node hierarchy and its transforms, against a naive model that recomputes every world from the root
+    ("node", "NodeConformance", [rt("Physics2D", "MaxInstancesAttribute.cs"), rt("Physics2D", "Arena.cs"), rt("Physics2D", "Pose2D.cs"), c2("CoreLimits.cs"), c2("Node.cs")],
+     os.path.join(HERE, "conformance", "NodeConformance.cs")),
+    # tier 2: the scene, components and the order of the game's callbacks; scripts mutate the scene in the middle of dispatch
+    ("lifecycle", "LifecycleConformance", CORE2D_FILES(), os.path.join(HERE, "conformance", "LifecycleConformance.cs"), True, True),
+    # tier 3: physics components and the collision and trigger messages, against hand-worked numbers, on the real library
+    ("physics-scene", "PhysicsSceneConformance", CORE2D_FILES(), os.path.join(HERE, "conformance", "PhysicsSceneConformance.cs"), True, True),
+    # the draw batch a renderer is handed: layer order, a child of a rotated and scaled parent, a sprite on a falling body, recycling
+    ("render-batch", "RenderBatchConformance", CORE2D_FILES(), os.path.join(HERE, "conformance", "RenderBatchConformance.cs"), True, False),
+    # the simulation core, whole: native world, step, pose writes into the body arena, and the event stream, against the real library
+    ("sim", "SimConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs", "MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs", "Pose2D.cs", "SimCore2D.cs")],
+     os.path.join(HERE, "conformance", "SimConformance.cs"), True),
+    # `native` cases call the real Box2D shim through bindings generated from prowl_box2d.h (gen_pb2.py): on .NET through [LibraryImport], as
+    # translated C linked against the same library. No program files: everything it needs is the generated bindings.
+    ("native", "NativeConformance", [], os.path.join(HERE, "conformance", "NativeConformance.cs"), True),
 ]
 
 
-def run_dotnet_reference(files, workdir):
+def run_dotnet_reference(files, workdir, extra_env=None):
     proj = os.path.join(workdir, "ref.csproj")
     items = "\n".join('    <Compile Include="%s" />' % f for f in files)
     with open(proj, "w") as f:
         f.write('<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>'
-                '<ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><NuGetAudit>false</NuGetAudit></PropertyGroup>\n'
+                '<ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><NuGetAudit>false</NuGetAudit>'
+                '<AllowUnsafeBlocks>true</AllowUnsafeBlocks><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>\n'
                 '  <ItemGroup>\n%s\n  </ItemGroup>\n</Project>\n' % items)
-    env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
+    env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1", **(extra_env or {}))
     b = subprocess.run(["dotnet", "build", "-c", "Release", "-o", os.path.join(workdir, "bin"), proj], capture_output=True, text=True, env=env)
     if b.returncode != 0:
         return None, "the reference did not build under .NET:\n" + "\n".join(l for l in b.stdout.splitlines() if "error" in l)[:1500]
     r = subprocess.run(["dotnet", os.path.join(workdir, "bin", "ref.dll")], capture_output=True, text=True, env=env)
     return r.stdout, None
+
+
+def native_library_dir():
+    """The directory holding the built libprowl_box2d (python3 build.py native installs it under Libraries/<rid>/native), or None."""
+    for rid_dir in sorted(glob.glob(os.path.join(PROWL, "Libraries", "*", "native"))):
+        if any(os.path.exists(os.path.join(rid_dir, n)) for n in ("libprowl_box2d.so", "libprowl_box2d.dylib", "prowl_box2d.dll")):
+            return rid_dir
+    return None
 
 
 def cmd_conformance(args):
@@ -648,25 +690,66 @@ def cmd_conformance(args):
         sys.exit("ccsharp_scan: no CCSharp at %s (run `python3 build.py deps`)" % home)
     cc = os.environ.get("CC") or shutil.which("cc") or shutil.which("gcc")
     failures = 0
-    for name, main, files, program in CONFORMANCE:
+
+    # The engine compiles ONE copy of the native API, generated from the header and committed; it must be what the header generates today.
+    import gen_pb2
+    try:
+        committed = open(gen_pb2.RUNTIME_FILE, encoding="utf-8", newline="").read() if os.path.exists(gen_pb2.RUNTIME_FILE) else ""
+        if committed != gen_pb2.runtime_text():
+            print("FAIL bindings the committed PB2.Generated.cs is not what prowl_box2d.h generates (python3 tools/ccsharp/gen_pb2.py runtime)")
+            failures += 1
+        else:
+            print("ok   bindings PB2.Generated.cs is current: %d native functions from prowl_box2d.h" % len(gen_pb2.parse_header().functions))
+    except gen_pb2.GenError as e:
+        print("FAIL bindings gen_pb2: %s" % e)
+        failures += 1
+
+    for case in CONFORMANCE:
+        name, main, files, program = case[:4]
+        native = len(case) > 4 and case[4]
+        scripts = len(case) > 5 and case[5]
         work = tempfile.mkdtemp(prefix="ccs-conf-")
         try:
             allfiles = files + [program]
+            if scripts:
+                # the program's [Script] classes get their call sink, generated the way a game's build does it
+                import gen_scripts
+                sink = os.path.join(work, "Scripts.g.cs")
+                try:
+                    gen_scripts.generate(sink, [program])
+                except gen_scripts.GenError as e:
+                    print("FAIL %-8s gen_scripts: %s" % (name, e))
+                    failures += 1
+                    continue
+                allfiles = allfiles + [sink]
             out = os.path.join(work, "out")
-            t = subprocess.run([sys.executable, ccs2c] + allfiles + ["--main=" + main, "--name=Conf", "--convert=" + out, "--c"], capture_output=True, text=True)
+            flags, link, ref_files, ref_env = [], [], list(allfiles), None
+            if native:
+                libdir = native_library_dir()
+                if libdir is None:
+                    print("FAIL %-8s the native library is not built (python3 build.py native)" % name)
+                    failures += 1
+                    continue
+                gen_pb2.generate(os.path.join(work, "gen"))
+                nat_inc = os.path.join(PROWL, "Native", "Box2D")
+                flags = ["--bindings=" + os.path.join(work, "gen", "c"), "--include=" + nat_inc]
+                link = ["-I" + nat_inc, "-L" + libdir, "-lprowl_box2d", "-Wl,-rpath," + libdir]
+                ref_files = [os.path.join(work, "gen", "net", "PB2.net.cs")] + allfiles
+                ref_env = {"LD_LIBRARY_PATH": libdir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")}
+            t = subprocess.run([sys.executable, ccs2c] + allfiles + flags + ["--main=" + main, "--name=Conf", "--convert=" + out, "--c"], capture_output=True, text=True)
             if t.returncode != 0:
                 print("FAIL %-8s translation refused:\n%s" % (name, (t.stdout + t.stderr)[-1500:]))
                 failures += 1
                 continue
             exe = os.path.join(work, "conf")
-            g = subprocess.run([cc, "-w", "-O1", "-o", exe, os.path.join(out, "Conf.c"), "-lm"], capture_output=True, text=True)
+            g = subprocess.run([cc, "-w", "-O1", "-o", exe, os.path.join(out, "Conf.c")] + link + ["-lm"], capture_output=True, text=True)
             if g.returncode != 0:
                 errs = [l for l in g.stderr.splitlines() if "error" in l]
                 print("FAIL %-8s gcc rejected the generated C (%d errors):\n   %s" % (name, len(errs), "\n   ".join(e[:170] for e in errs[:6])))
                 failures += 1
                 continue
             c_out = subprocess.run([exe], capture_output=True, text=True).stdout
-            ref, err = run_dotnet_reference(allfiles, work)
+            ref, err = run_dotnet_reference(ref_files, work, ref_env)
             if ref is None:
                 print("FAIL %-8s %s" % (name, err))
                 failures += 1

@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The 2D runtime that translates to C: nodes, components, the scene's lifecycle, the physics components and the simulation core under them.
+    This file is the ONE list of what it is. The .NET build compiles it; `python3 build.py player` reads the same list (the items marked
+    CBuild="false" are the .NET-only bindings, which the C build replaces with the generated C flavor) and translates it with the game's
+    scripts. Add a file here and both builds have it.
+
+    It depends on nothing: no NuGet package, no Prowl.Runtime assembly. The physics core is linked in from Prowl.Runtime/Physics2D, where the
+    engine's own 2D physics uses the same files.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Prowl.Core2D</RootNamespace>
+    <Nullable>annotations</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NuGetAudit>false</NuGetAudit>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup Label="Physics core (shared with Prowl.Runtime)">
+    <Compile Include="..\Prowl.Runtime\Physics2D\MaxInstancesAttribute.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\Arena.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\Pose2D.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\Collider2DGeometry.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\HandleTable.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\TriggerSet.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\BodyRecord.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\JointRecord.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\Registry2D.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\SimCore2D.cs" />
+  </ItemGroup>
+
+  <ItemGroup Label="Native bindings (.NET flavor; the C build uses the generated C flavor instead)">
+    <Compile Include="..\Prowl.Runtime\Physics2D\Native\PB2.Generated.cs" CBuild="false" />
+  </ItemGroup>
+
+  <ItemGroup Label="The runtime">
+    <Compile Include="CoreLimits.cs" />
+    <Compile Include="ScriptAttribute.cs" />
+    <Compile Include="Node.cs" />
+    <Compile Include="Component.cs" />
+    <Compile Include="Rigidbody2D.cs" />
+    <Compile Include="Collider2D.cs" />
+    <Compile Include="World2D.cs" />
+    <Compile Include="SpriteRenderer2D.cs" />
+    <Compile Include="Renderer2D.cs" />
+    <Compile Include="Scene2D.cs" />
+  </ItemGroup>
+
+</Project>

@@ -38,6 +38,7 @@ internal enum SceneCallbacks
     TriggerEnter2D = 1 << 14,
     TriggerStay2D = 1 << 15,
     TriggerExit2D = 1 << 16,
+    JointBreak2D = 1 << 17,
 
     /// <summary>Everything the per-frame loops dispatch. A component with none of these is never registered.</summary>
     AnyFrame = Start | Update | LateUpdate | FixedUpdate | RenderCollect | DrawGizmos | OnGui,
@@ -100,6 +101,7 @@ internal sealed class SceneDispatcher
         if (Overrides(type, nameof(MonoBehaviour.OnTriggerEnter2D))) callbacks |= SceneCallbacks.TriggerEnter2D;
         if (Overrides(type, nameof(MonoBehaviour.OnTriggerStay2D))) callbacks |= SceneCallbacks.TriggerStay2D;
         if (Overrides(type, nameof(MonoBehaviour.OnTriggerExit2D))) callbacks |= SceneCallbacks.TriggerExit2D;
+        if (Overrides(type, nameof(MonoBehaviour.OnJointBreak2D))) callbacks |= SceneCallbacks.JointBreak2D;
 
         return callbacks;
     }
@@ -513,6 +515,16 @@ internal sealed class SceneDispatcher
         if (count == 0) return;
         if (count == 1) { single.InternalOnTriggerExit2D(other); return; }
         try { for (int i = 0; i < count; i++) many![i].InternalOnTriggerExit2D(other); }
+        finally { Release(many!, count); }
+    }
+
+    public static void JointBreak2D(GameObject go, Joint2D joint)
+    {
+        if (go is null) return;
+        int count = Collect(go, SceneCallbacks.JointBreak2D, out MonoBehaviour single, out MonoBehaviour[]? many);
+        if (count == 0) return;
+        if (count == 1) { single.InternalOnJointBreak2D(joint); return; }
+        try { for (int i = 0; i < count; i++) many![i].InternalOnJointBreak2D(joint); }
         finally { Release(many!, count); }
     }
 

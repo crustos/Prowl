@@ -449,6 +449,13 @@ public abstract class MonoBehaviour : EngineObject, ISerializationCallbackReceiv
     /// <summary>Called once when the overlap ends. Not sent if either collider was destroyed or disabled during the overlap.</summary>
     public virtual void OnTriggerExit2D(Collider2D other) { }
 
+    /// <summary>
+    /// Called on the GameObject of a <see cref="Joint2D"/> when its force or torque went over <see cref="Joint2D.BreakForce"/> or
+    /// <see cref="Joint2D.BreakTorque"/>. The joint has been destroyed by the time this runs; the component stays, and
+    /// <see cref="Joint2D.IsBroken"/> is true until the joint is rebuilt.
+    /// </summary>
+    public virtual void OnJointBreak2D(Joint2D joint) { }
+
     /// <summary>Gated Start only runs in play mode or with [ExecuteAlways].</summary>
     internal void InternalStart()
     {
@@ -586,6 +593,13 @@ public abstract class MonoBehaviour : EngineObject, ISerializationCallbackReceiv
         if (!ShouldExecuteGameplay) return;
         try { OnTriggerExit2D(other); }
         catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnTriggerExit2D() threw: {ex.Message}\n{ex.StackTrace}"); }
+    }
+
+    internal void InternalOnJointBreak2D(Joint2D joint)
+    {
+        if (!ShouldExecuteGameplay) return;
+        try { OnJointBreak2D(joint); }
+        catch (Exception ex) { Debug.LogError($"[{Name}/{GetType().Name}] OnJointBreak2D() threw: {ex.Message}\n{ex.StackTrace}"); }
     }
 
     // Implemented explicitly so the identity rules below always run. They used to live in the virtual

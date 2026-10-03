@@ -6,6 +6,7 @@
 #include "box2d/collision.h"
 #include "box2d/math_functions.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,13 @@ static PB2ContactEvent* g_contacts;
 static int g_contactCap;
 static PB2SensorEvent* g_sensors;
 static int g_sensorCap;
+static int32_t* g_jointEvents;
+static int g_jointEventCap;
+
+// A static body at the origin that world-anchored joints attach to (Box2D joints always join two bodies). It has no
+// shapes and no managed index (userData 0), so nothing is ever reported about it. Created on first use.
+static b2BodyId g_ground;
+static int g_hasGround;
 
 // ---- helpers -------------------------------------------------------------------------------
 
@@ -48,6 +56,11 @@ static inline b2ShapeId shape_id( uint32_t v )
 static inline b2ChainId chain_id( uint32_t v )
 {
 	UNPACK( b2ChainId, v, id );
+	return id;
+}
+static inline b2JointId joint_id( uint32_t v )
+{
+	UNPACK( b2JointId, v, id );
 	return id;
 }
 
@@ -113,6 +126,7 @@ void pb2_abi( int32_t* out )
 	out[5] = (int32_t)sizeof( PB2TransformSet );
 	out[6] = (int32_t)sizeof( PB2RayHit );
 	out[7] = (int32_t)sizeof( void* );
+	out[8] = (int32_t)sizeof( PB2JointDef );
 }
 
 void pb2_world_create( float gx, float gy, int workerCount )
@@ -122,6 +136,7 @@ void pb2_world_create( float gx, float gy, int workerCount )
 		b2DestroyWorld( g_world );
 		g_hasWorld = 0;
 	}
+	g_hasGround = 0;
 	for ( int i = 0; i < PB2_LAYER_COUNT; ++i )
 	{
 		g_matrix[i] = 0xFFFFFFFFu;
@@ -141,13 +156,16 @@ void pb2_world_destroy( void )
 		b2DestroyWorld( g_world );
 		g_hasWorld = 0;
 	}
+	g_hasGround = 0;
 	free( g_moves );
 	free( g_contacts );
 	free( g_sensors );
+	free( g_jointEvents );
 	g_moves = NULL;
 	g_contacts = NULL;
 	g_sensors = NULL;
-	g_moveCap = g_contactCap = g_sensorCap = 0;
+	g_jointEvents = NULL;
+	g_moveCap = g_contactCap = g_sensorCap = g_jointEventCap = 0;
 }
 
 void pb2_world_set_gravity( float x, float y )
@@ -274,15 +292,30 @@ void pb2_step( float dt, int subSteps, PB2StepInfo* info )
 		g_sensors[sensors++] = (PB2SensorEvent){ user_collider( us ), user_collider( uv ), PB2_EVENT_END };
 	}
 
+	// joints over their force / torque threshold. Copied out now: the array is invalid once a joint is destroyed, and
+	// managed code destroys a broken joint as soon as it hears about it.
+	b2JointEvents je = b2World_GetJointEvents( g_world );
+	g_jointEvents = (int32_t*)grow( g_jointEvents, &g_jointEventCap, je.count, sizeof( int32_t ) );
+	int jointEvents = 0;
+	for ( int i = 0; i < je.count; ++i )
+	{
+		int32_t idx = (int32_t)(intptr_t)je.jointEvents[i].userData - 1;
+		if ( idx >= 0 )
+		{
+			g_jointEvents[jointEvents++] = idx;
+		}
+	}
+
 	info->moveCount = moves;
 	info->contactCount = contacts;
 	info->contactBeginCount = beginCount;
 	info->sensorCount = sensors;
 	info->awakeBodyCount = b2World_GetAwakeBodyCount( g_world );
-	info->reserved = 0;
+	info->jointEventCount = jointEvents;
 	info->moves = (intptr_t)g_moves;
 	info->contacts = (intptr_t)g_contacts;
 	info->sensors = (intptr_t)g_sensors;
+	info->joints = (intptr_t)g_jointEvents;
 }
 
 // ---- waking ---------------------------------------------------------------------------------
@@ -329,18 +362,25 @@ static void wake_in_aabb( b2AABB box )
 	free( ctx.ids );
 }
 
-// Teleports a body. A static body that moves wakes whatever was touching it, and whatever it now overlaps.
+// Teleports a body. A static body that moves wakes whatever was touching it, and whatever it now overlaps. Any other body is woken itself:
+// b2Body_SetTransform moves a sleeping body but leaves it asleep, so it would hang where it was put with no gravity until something else
+// woke it (Rigidbody2D.Teleport wakes explicitly; the batched path used for Transform edits did not).
 static void set_transform_waking( b2BodyId id, b2Pos p, b2Rot q )
 {
-	bool isStatic = b2Body_GetType( id ) == b2_staticBody && b2Body_GetShapeCount( id ) > 0;
-	if ( isStatic )
+	bool isStatic = b2Body_GetType( id ) == b2_staticBody;
+	bool hasShapes = b2Body_GetShapeCount( id ) > 0;
+	if ( isStatic && hasShapes )
 	{
 		wake_in_aabb( b2Body_ComputeAABB( id ) );
 	}
 	b2Body_SetTransform( id, p, q );
-	if ( isStatic )
+	if ( isStatic && hasShapes )
 	{
 		wake_in_aabb( b2Body_ComputeAABB( id ) );
+	}
+	if ( !isStatic )
+	{
+		b2Body_SetAwake( id, true );
 	}
 }
 
@@ -660,6 +700,293 @@ void pb2_shape_set_material( uint32_t shape, float friction, float restitution )
 void pb2_shape_set_density( uint32_t shape, float density )
 {
 	b2Shape_SetDensity( shape_id( shape ), density, true );
+}
+
+// ---- joints --------------------------------------------------------------------------------
+
+static b2BodyId ground_body( void )
+{
+	if ( !g_hasGround )
+	{
+		b2BodyDef def = b2DefaultBodyDef();
+		def.type = b2_staticBody;
+		def.userData = NULL;
+		g_ground = b2CreateBody( g_world, &def );
+		g_hasGround = 1;
+	}
+	return g_ground;
+}
+
+// Managed code passes "never" as FLT_MAX or infinity; anything that is not a finite non-negative number means the same.
+static float clean_threshold( float t )
+{
+	return ( t >= 0.0f && t < FLT_MAX ) ? t : FLT_MAX;
+}
+
+// Writes every tunable value of the record onto a live joint. Box2D's setters leave an unchanged value alone (they only
+// reset accumulated impulses when something is switched on or off), so calling this with the same record is harmless.
+static void apply_joint( b2JointId id, const PB2JointDef* d )
+{
+	const float* p = d->p;
+	bool spring = ( d->flags & PB2_JF_SPRING ) != 0;
+	bool limit = ( d->flags & PB2_JF_LIMIT ) != 0;
+	bool motor = ( d->flags & PB2_JF_MOTOR ) != 0;
+
+	b2Joint_SetCollideConnected( id, ( d->flags & PB2_JF_COLLIDE_CONNECTED ) != 0 );
+	b2Joint_SetForceThreshold( id, clean_threshold( d->forceThreshold ) );
+	b2Joint_SetTorqueThreshold( id, clean_threshold( d->torqueThreshold ) );
+
+	switch ( d->type )
+	{
+		case PB2_JOINT_DISTANCE:
+			b2DistanceJoint_SetLength( id, p[0] );
+			b2DistanceJoint_SetLengthRange( id, p[1], p[2] );
+			b2DistanceJoint_EnableSpring( id, spring );
+			b2DistanceJoint_SetSpringHertz( id, p[3] );
+			b2DistanceJoint_SetSpringDampingRatio( id, p[4] );
+			b2DistanceJoint_EnableLimit( id, limit );
+			b2DistanceJoint_EnableMotor( id, motor );
+			b2DistanceJoint_SetMaxMotorForce( id, p[5] );
+			b2DistanceJoint_SetMotorSpeed( id, p[6] );
+			break;
+
+		case PB2_JOINT_REVOLUTE:
+			b2RevoluteJoint_SetTargetAngle( id, p[0] );
+			b2RevoluteJoint_EnableSpring( id, spring );
+			b2RevoluteJoint_SetSpringHertz( id, p[1] );
+			b2RevoluteJoint_SetSpringDampingRatio( id, p[2] );
+			b2RevoluteJoint_SetLimits( id, p[3], p[4] );
+			b2RevoluteJoint_EnableLimit( id, limit );
+			b2RevoluteJoint_EnableMotor( id, motor );
+			b2RevoluteJoint_SetMaxMotorTorque( id, p[5] );
+			b2RevoluteJoint_SetMotorSpeed( id, p[6] );
+			break;
+
+		case PB2_JOINT_PRISMATIC:
+			b2PrismaticJoint_EnableSpring( id, spring );
+			b2PrismaticJoint_SetSpringHertz( id, p[0] );
+			b2PrismaticJoint_SetSpringDampingRatio( id, p[1] );
+			b2PrismaticJoint_SetTargetTranslation( id, p[2] );
+			b2PrismaticJoint_SetLimits( id, p[3], p[4] );
+			b2PrismaticJoint_EnableLimit( id, limit );
+			b2PrismaticJoint_EnableMotor( id, motor );
+			b2PrismaticJoint_SetMaxMotorForce( id, p[5] );
+			b2PrismaticJoint_SetMotorSpeed( id, p[6] );
+			break;
+
+		case PB2_JOINT_WHEEL:
+			b2WheelJoint_EnableSpring( id, spring );
+			b2WheelJoint_SetSpringHertz( id, p[0] );
+			b2WheelJoint_SetSpringDampingRatio( id, p[1] );
+			b2WheelJoint_SetLimits( id, p[2], p[3] );
+			b2WheelJoint_EnableLimit( id, limit );
+			b2WheelJoint_EnableMotor( id, motor );
+			b2WheelJoint_SetMaxMotorTorque( id, p[4] );
+			b2WheelJoint_SetMotorSpeed( id, p[5] );
+			break;
+
+		case PB2_JOINT_WELD:
+			b2WeldJoint_SetLinearHertz( id, p[0] );
+			b2WeldJoint_SetAngularHertz( id, p[1] );
+			b2WeldJoint_SetLinearDampingRatio( id, p[2] );
+			b2WeldJoint_SetAngularDampingRatio( id, p[3] );
+			break;
+
+		case PB2_JOINT_MOTOR:
+			b2MotorJoint_SetLinearVelocity( id, (b2Vec2){ p[0], p[1] } );
+			b2MotorJoint_SetMaxVelocityForce( id, p[2] );
+			b2MotorJoint_SetAngularVelocity( id, p[3] );
+			b2MotorJoint_SetMaxVelocityTorque( id, p[4] );
+			b2MotorJoint_SetLinearHertz( id, p[5] );
+			b2MotorJoint_SetLinearDampingRatio( id, p[6] );
+			b2MotorJoint_SetMaxSpringForce( id, p[7] );
+			b2MotorJoint_SetAngularHertz( id, p[8] );
+			b2MotorJoint_SetAngularDampingRatio( id, p[9] );
+			b2MotorJoint_SetMaxSpringTorque( id, p[10] );
+			break;
+
+		default: // PB2_JOINT_FILTER has nothing to tune
+			break;
+	}
+}
+
+static void fill_joint_base( b2JointDef* base, const PB2JointDef* d, b2BodyId a, b2BodyId b )
+{
+	base->userData = (void*)(intptr_t)( d->jointIndex + 1 );
+	base->bodyIdA = a;
+	base->bodyIdB = b;
+	base->localFrameA = (b2Transform){ { d->ax, d->ay }, b2MakeRot( d->aAngle ) };
+	base->localFrameB = (b2Transform){ { d->bx, d->by }, b2MakeRot( d->bAngle ) };
+	base->forceThreshold = clean_threshold( d->forceThreshold );
+	base->torqueThreshold = clean_threshold( d->torqueThreshold );
+	base->collideConnected = ( d->flags & PB2_JF_COLLIDE_CONNECTED ) != 0;
+}
+
+uint32_t pb2_joint_create( const PB2JointDef* d )
+{
+	b2BodyId b = body_id( d->bodyB );
+	if ( !b2Body_IsValid( b ) )
+	{
+		return 0;
+	}
+	b2BodyId a;
+	if ( d->bodyA != 0 )
+	{
+		a = body_id( d->bodyA );
+		if ( !b2Body_IsValid( a ) )
+		{
+			return 0;
+		}
+	}
+	else
+	{
+		a = ground_body();
+	}
+	if ( pack_id( &a ) == pack_id( &b ) )
+	{
+		return 0;
+	}
+
+	b2JointId id;
+	switch ( d->type )
+	{
+		case PB2_JOINT_DISTANCE:
+		{
+			b2DistanceJointDef def = b2DefaultDistanceJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			def.length = d->p[0];
+			def.minLength = d->p[1];
+			def.maxLength = d->p[2];
+			id = b2CreateDistanceJoint( g_world, &def );
+			break;
+		}
+		case PB2_JOINT_REVOLUTE:
+		{
+			b2RevoluteJointDef def = b2DefaultRevoluteJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			id = b2CreateRevoluteJoint( g_world, &def );
+			break;
+		}
+		case PB2_JOINT_PRISMATIC:
+		{
+			b2PrismaticJointDef def = b2DefaultPrismaticJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			id = b2CreatePrismaticJoint( g_world, &def );
+			break;
+		}
+		case PB2_JOINT_WHEEL:
+		{
+			b2WheelJointDef def = b2DefaultWheelJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			id = b2CreateWheelJoint( g_world, &def );
+			break;
+		}
+		case PB2_JOINT_WELD:
+		{
+			b2WeldJointDef def = b2DefaultWeldJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			id = b2CreateWeldJoint( g_world, &def );
+			break;
+		}
+		case PB2_JOINT_MOTOR:
+		{
+			b2MotorJointDef def = b2DefaultMotorJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			id = b2CreateMotorJoint( g_world, &def );
+			break;
+		}
+		case PB2_JOINT_FILTER:
+		{
+			b2FilterJointDef def = b2DefaultFilterJointDef();
+			fill_joint_base( &def.base, d, a, b );
+			id = b2CreateFilterJoint( g_world, &def );
+			break;
+		}
+		default:
+			return 0;
+	}
+
+	// The definition structs only carry the type's headline values; everything else goes through the setters so that
+	// creating and tuning a joint share one code path.
+	apply_joint( id, d );
+	return pack_id( &id );
+}
+
+void pb2_joint_destroy( uint32_t joint )
+{
+	b2JointId id = joint_id( joint );
+	if ( b2Joint_IsValid( id ) )
+	{
+		b2DestroyJoint( id );
+	}
+}
+
+int pb2_joint_is_valid( uint32_t joint )
+{
+	return joint != 0 && b2Joint_IsValid( joint_id( joint ) ) ? 1 : 0;
+}
+
+void pb2_joint_apply( uint32_t joint, const PB2JointDef* d )
+{
+	b2JointId id = joint_id( joint );
+	if ( joint == 0 || !b2Joint_IsValid( id ) )
+	{
+		return;
+	}
+	apply_joint( id, d );
+	// The setters do not wake anything, so a motor switched on under a sleeping body would do nothing.
+	b2Joint_WakeBodies( id );
+}
+
+void pb2_joint_get_state( uint32_t joint, float* out )
+{
+	memset( out, 0, sizeof( float ) * 8 );
+	b2JointId id = joint_id( joint );
+	if ( joint == 0 || !b2Joint_IsValid( id ) )
+	{
+		return;
+	}
+
+	b2Vec2 force = b2Joint_GetConstraintForce( id );
+	out[0] = force.x;
+	out[1] = force.y;
+	out[2] = b2Joint_GetConstraintTorque( id );
+	out[6] = b2Joint_GetLinearSeparation( id );
+	out[7] = b2Joint_GetAngularSeparation( id );
+
+	switch ( b2Joint_GetType( id ) )
+	{
+		case b2_distanceJoint:
+			out[3] = b2DistanceJoint_GetCurrentLength( id );
+			out[5] = b2DistanceJoint_GetMotorForce( id );
+			break;
+		case b2_revoluteJoint:
+			out[3] = b2RevoluteJoint_GetAngle( id );
+			out[5] = b2RevoluteJoint_GetMotorTorque( id );
+			break;
+		case b2_prismaticJoint:
+			out[3] = b2PrismaticJoint_GetTranslation( id );
+			out[4] = b2PrismaticJoint_GetSpeed( id );
+			out[5] = b2PrismaticJoint_GetMotorForce( id );
+			break;
+		case b2_wheelJoint:
+		{
+			// Box2D has no wheel translation getter; project the anchor separation onto the axis (x of frame A).
+			b2BodyId bodyA = b2Joint_GetBodyA( id ), bodyB = b2Joint_GetBodyB( id );
+			b2Transform fa = b2Joint_GetLocalFrameA( id ), fb = b2Joint_GetLocalFrameB( id );
+			b2Rot qA = b2Body_GetRotation( bodyA );
+			b2Pos pA = b2Body_GetPosition( bodyA ), pB = b2Body_GetPosition( bodyB );
+			b2Vec2 anchorA = b2RotateVector( qA, fa.p );
+			b2Vec2 anchorB = b2RotateVector( b2Body_GetRotation( bodyB ), fb.p );
+			b2Vec2 d = { ( pB.x + anchorB.x ) - ( pA.x + anchorA.x ), ( pB.y + anchorB.y ) - ( pA.y + anchorA.y ) };
+			b2Vec2 axis = b2RotateVector( b2MulRot( qA, fa.q ), (b2Vec2){ 1.0f, 0.0f } );
+			out[3] = d.x * axis.x + d.y * axis.y;
+			out[5] = b2WheelJoint_GetMotorTorque( id );
+			break;
+		}
+		default:
+			break;
+	}
 }
 
 // ---- queries -------------------------------------------------------------------------------

@@ -5,8 +5,8 @@ shim only; it never binds `box2d.h` directly. Box2D is **not** part of this repo
 (`../box2d`; `python3 build.py deps` does that, or pass `-DPROWL_BOX2D_DIR=...` to cmake).
 
 ```
-Prowl.Runtime/Physics2D/Native/PB2.cs          raw P/Invoke + fixed-layout structs   (no Prowl deps)
-Prowl.Runtime/Physics2D/Native/Box2DWorld.cs   managed wrapper: ABI check, batching  (no Prowl deps)
+Prowl.Runtime/Physics2D/Native/PB2.Generated.cs  P/Invoke + fixed-layout structs, GENERATED from the header (tools/ccsharp/gen_pb2.py)
+Prowl.Runtime/Physics2D/SimCore2D.cs             the simulation over those bindings: step, records, event stream (also builds as C)
 Native/Box2D/prowl_box2d.{h,c}                 the shim
 Native/Box2D/Tests/Box2DSmoke                  standalone tests + benchmark (no NuGet packages needed)
 ```
@@ -44,8 +44,8 @@ harness is how the 2D layer is exercised without it.
 ## Design decisions (and the measurements behind them)
 
 * **Why a shim.** The fork's `*Def` structs use `bool x : 1` bitfields; their layout is compiler-defined, so they can't
-  be mirrored from C#. Every shim record is made of 4-byte fields; `Box2DWorld.Create` checks all sizes against the
-  loaded library and refuses to run on a mismatch.
+  be mirrored from C#. Every shim record is made of 4-byte fields; the generated `PB2.VerifyAbi()` checks all sizes against the
+  loaded library when the world is created and refuses to run on a mismatch.
 * **One crossing per frame.** `pb2_step` steps the world and returns body moves, contact events (manifold point /
   normal / impulse already resolved) and sensor events as flat arrays. Kinematic moves and teleports are queued and
   flushed in one call.
@@ -54,6 +54,17 @@ harness is how the 2D layer is exercised without it.
   chain / segment shapes inherit them. Sensors ignore the custom filter, so their events are matrix-filtered in the shim.
 * **Edges.** `pb2_segments_create` = two-sided edges (Unity `EdgeCollider2D` semantics). `pb2_chain_create` = Box2D's
   one-sided chain with ghost vertices (smoother for characters); winding decides the solid side. Both are tested.
+* **Joints.** One record, `PB2JointDef`, describes every joint type (distance, revolute, prismatic, wheel, weld, motor, filter);
+  `pb2_joint_create` / `pb2_joint_apply` take it, and the `p[]` slot table in `prowl_box2d.h` says what each float means per type.
+  The body that owns a joint is body B and what it connects to (a body, or the world through a hidden static ground body that
+  the shim creates on first use) is body A, so a revolute angle or a prismatic translation reads as "how far has *my* body
+  moved". A joint dies with either of its bodies; the managed simulation records which bodies each joint connects so it can tell the
+  owning component, which then recreates the joint when both bodies exist again. Force / torque thresholds are reported through
+  `pb2_step` (`PB2StepInfo::joints`) as the managed joint indices to break. The mover and pogo joints are not wrapped: they are
+  character-controller helpers rather than general constraints.
+* **The header is the source of the managed bindings.** Every pointer parameter is marked `PB2_IN` / `PB2_OUT` / `PB2_IN_ARR` / `PB2_OUT_ARR` (they expand to nothing),
+  and `tools/ccsharp/gen_pb2.py` generates the .NET bindings and the C-build bindings from it; `gen_pb2.py runtime` writes the committed `PB2.Generated.cs` and `gen_pb2.py check` (also run by `build.py ccsharp`) fails if it is stale. Add a
+  function to the header, mark its pointers, regenerate, and both flavors have it.
 * **Limits inherited from the fork:** single world per process; 16-bit handles => at most 65,535 bodies/shapes.
 
 ### Measured (single 2.1 GHz Xeon core, .NET 10, pyramid of boxes, all awake)

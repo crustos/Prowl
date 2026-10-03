@@ -47,3 +47,13 @@ if(NOT MSVC)
   target_compile_options(prowl_box2d PRIVATE -Wall -Wextra -ffp-contract=off)
 endif()
 set_target_properties(prowl_box2d PROPERTIES C_VISIBILITY_PRESET hidden)
+
+# The same shim as a static archive, for a program with no .NET to load a shared library: the C player (`python3 build.py player`) links
+# libprowl_box2d_static.a and libbox2d.a into ONE executable.
+add_library(prowl_box2d_static STATIC prowl_box2d.c)
+target_link_libraries(prowl_box2d_static PUBLIC box2d)
+target_include_directories(prowl_box2d_static PRIVATE ${PROWL_BOX2D_DIR}/include)
+if(NOT MSVC)
+  target_link_libraries(prowl_box2d_static PUBLIC m)
+  target_compile_options(prowl_box2d_static PRIVATE -Wall -Wextra -ffp-contract=off)
+endif()

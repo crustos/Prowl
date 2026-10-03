@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using Prowl.Echo;
 using Prowl.Runtime.Physics2D;
-using Prowl.Runtime.Physics2D.Native;
+using Prowl.Native.Box2D;
 using Prowl.Vector;
 
 namespace Prowl.Runtime;
@@ -20,7 +20,7 @@ namespace Prowl.Runtime;
 /// </summary>
 [AddComponentMenu("Physics 2D/Rigidbody 2D")]
 [ComponentIcon("\uf1b2")] // Cube
-public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
+public sealed class Rigidbody2D : MonoBehaviour
 {
     private const float MinMass = 0.001f;
 
@@ -60,7 +60,10 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
     private uint _handle;                 // the native body, 0 while there is none
     private int _index = -1;              // this body's slot in the simulation's registry
     private PhysicsWorld2D? _world;
-    private BodyPose2D _pose;
+    private BodyRecord? _record;          // the simulation's record of this body, in its arena: the pose history lives THERE, written by the step
+
+    /// <summary>The last two simulated poses, in the body's arena record. Only valid while <see cref="IsSimulated"/>.</summary>
+    private ref BodyPose2D Pose => ref _record!.Pose;
 
     // The pose last written into the Transform. Lets us tell "the user moved the Transform" from "only its scale or
     // a parent changed", and skip dirtying the Transform every frame for a body that is at rest.
@@ -75,6 +78,9 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
     internal int SyncIndex = -1;          // slot in PhysicsWorld2D's sync list
 
     internal uint Handle => _handle;
+
+    /// <summary>This body's slot in the simulation's registry (what joints record to know which bodies they connect), or -1.</summary>
+    internal int SimIndex => _index;
     internal PhysicsWorld2D? World => _world;
 
     /// <summary>Whether this rigidbody currently has a body in the physics world.</summary>
@@ -148,7 +154,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         {
             AssertOwner();
             constraints = value;
-            if (IsSimulated) PB2.BodySetFlags(_handle, (uint)BuildFlags());
+            if (IsSimulated) PB2.BodySetFlags(_handle, BuildFlags());
         }
     }
 
@@ -160,7 +166,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         {
             AssertOwner();
             isBullet = value;
-            if (IsSimulated) PB2.BodySetFlags(_handle, (uint)BuildFlags());
+            if (IsSimulated) PB2.BodySetFlags(_handle, BuildFlags());
         }
     }
 
@@ -172,7 +178,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         {
             AssertOwner();
             canSleep = value;
-            if (IsSimulated) PB2.BodySetFlags(_handle, (uint)BuildFlags());
+            if (IsSimulated) PB2.BodySetFlags(_handle, BuildFlags());
         }
     }
 
@@ -191,14 +197,14 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         }
     }
 
-    private PB2BodyFlags BuildFlags()
+    private uint BuildFlags()
     {
-        PB2BodyFlags f = PB2BodyFlags.None;
-        if (isBullet) f |= PB2BodyFlags.Bullet;
-        if (!canSleep) f |= PB2BodyFlags.NoSleep;
-        if ((constraints & RigidbodyConstraints2D.FreezePositionX) != 0) f |= PB2BodyFlags.LockX;
-        if ((constraints & RigidbodyConstraints2D.FreezePositionY) != 0) f |= PB2BodyFlags.LockY;
-        if ((constraints & RigidbodyConstraints2D.FreezeRotation) != 0) f |= PB2BodyFlags.LockRotation;
+        uint f = 0u;
+        if (isBullet) f |= PB2.BfBullet;
+        if (!canSleep) f |= PB2.BfNoSleep;
+        if ((constraints & RigidbodyConstraints2D.FreezePositionX) != 0) f |= PB2.BfLockX;
+        if ((constraints & RigidbodyConstraints2D.FreezePositionY) != 0) f |= PB2.BfLockY;
+        if ((constraints & RigidbodyConstraints2D.FreezeRotation) != 0) f |= PB2.BfLockRot;
         return f;
     }
 
@@ -210,22 +216,22 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
     /// </summary>
     public Float2 Position
     {
-        get => IsSimulated ? new Float2(_pose.CurX, _pose.CurY) : TransformXY();
+        get => IsSimulated ? new Float2(Pose.CurX, Pose.CurY) : TransformXY();
         set
         {
             AssertOwner();
-            TeleportRadians(value, IsSimulated ? _pose.CurAngle : TransformAngle());
+            TeleportRadians(value, IsSimulated ? Pose.CurAngle : TransformAngle());
         }
     }
 
     /// <summary>The body's simulated rotation in degrees, continuous (it can exceed 360 for a spinning body). Setting it teleports.</summary>
     public float Rotation
     {
-        get => (IsSimulated ? _pose.CurAngle : TransformAngle()) * Maths.Rad2Deg;
+        get => (IsSimulated ? Pose.CurAngle : TransformAngle()) * Maths.Rad2Deg;
         set
         {
             AssertOwner();
-            TeleportRadians(IsSimulated ? new Float2(_pose.CurX, _pose.CurY) : TransformXY(), value * Maths.Deg2Rad);
+            TeleportRadians(IsSimulated ? new Float2(Pose.CurX, Pose.CurY) : TransformXY(), value * Maths.Deg2Rad);
         }
     }
 
@@ -279,9 +285,11 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
     private float _stVx, _stVy, _stW, _stInertia;
     private bool _stAwake;
 
-    private unsafe void RefreshState()
+    private static readonly float[] s_state = new float[10];   // scratch for BodyGetState: bodies are touched from the main thread only
+
+    private void RefreshState()
     {
-        float* s = stackalloc float[10];
+        float[] s = s_state;
         PB2.BodyGetState(_handle, s);
         _stVx = s[4]; _stVy = s[5]; _stW = s[6]; _stInertia = s[8]; _stAwake = s[9] > 0.5f;
     }
@@ -308,9 +316,6 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         _lastSyncedVersion = Transform.Version; // our own write is not a user edit
     }
 
-    void IBody2DHost.OnMoved(float x, float y, float cos, float sin, bool fellAsleep)
-        => _pose.Push(x, y, cos, sin, _world!.Simulation.StepIndex);
-
     /// <summary>
     /// Renders the Transform from the simulation. A body that did not move this step is left exactly where it is, so
     /// a field of resting bodies does not dirty a single Transform.
@@ -321,7 +326,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
 
         float alpha = interpolation == RigidbodyInterpolation.Interpolate ? Time.FixedAlpha : 1f;
         float x, y, angle;
-        _pose.Sample(alpha, _world.Simulation.StepIndex, out x, out y, out angle);
+        Pose.Sample(alpha, _world.Simulation.StepIndex, out x, out y, out angle);
 
         if (_hasWritten && x == _writtenX && y == _writtenY && angle == _writtenAngle) return;
         WriteTransform(x, y, angle);
@@ -342,13 +347,13 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
 
         // Compare with what we last wrote (or the simulated pose if we never wrote one): the Transform changing
         // because of its scale or a parent is not a request to move, and must not rewind an interpolated body.
-        float refX = _hasWritten ? _writtenX : _pose.CurX;
-        float refY = _hasWritten ? _writtenY : _pose.CurY;
-        float refA = _hasWritten ? _writtenAngle : _pose.CurAngle;
+        float refX = _hasWritten ? _writtenX : Pose.CurX;
+        float refY = _hasWritten ? _writtenY : Pose.CurY;
+        float refA = _hasWritten ? _writtenAngle : Pose.CurAngle;
         if (x == refX && y == refY && MathF.Abs(Angle2D.WrapPi(angle - refA)) < 1e-6f) return;
 
-        _world.Simulation.World.QueueTransform(_handle, x, y, angle, false);
-        _pose.Reset(x, y, angle, _world.Simulation.StepIndex);
+        _world.Simulation.QueueTransform(_handle, x, y, angle, false);
+        Pose.Reset(x, y, angle, _world.Simulation.StepIndex);
         _writtenX = x; _writtenY = y; _writtenAngle = angle;
         _hasWritten = true;
     }
@@ -362,14 +367,14 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
 
         PB2.BodySetTransform(_handle, position.X, position.Y, angleRadians);
         PB2.BodySetAwake(_handle, 1);
-        _pose.Reset(position.X, position.Y, angleRadians, _world.Simulation.StepIndex);
+        Pose.Reset(position.X, position.Y, angleRadians, _world.Simulation.StepIndex);
         WriteTransform(position.X, position.Y, angleRadians);
     }
 
     private void ResetPose()
     {
         if (!IsSimulated) return;
-        _pose.Reset(_pose.CurX, _pose.CurY, _pose.CurAngle, _world.Simulation.StepIndex);
+        Pose.Reset(Pose.CurX, Pose.CurY, Pose.CurAngle, _world.Simulation.StepIndex);
     }
 
     /// <summary>
@@ -380,11 +385,11 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
     {
         AssertOwner();
         if (!IsSimulated) return;
-        if (bodyType != BodyType2D.Kinematic) { TeleportRadians(position, _pose.CurAngle); return; }
+        if (bodyType != BodyType2D.Kinematic) { TeleportRadians(position, Pose.CurAngle); return; }
 
         BeginTarget();
         _targetX = position.X; _targetY = position.Y;
-        _world.Simulation.World.QueueTransform(_handle, _targetX, _targetY, _targetAngle, true);
+        _world.Simulation.QueueTransform(_handle, _targetX, _targetY, _targetAngle, true);
     }
 
     /// <summary>Turns toward an angle in degrees; see <see cref="MovePosition"/> for how each body type treats it.</summary>
@@ -393,11 +398,11 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         AssertOwner();
         if (!IsSimulated) return;
         float radians = degrees * Maths.Deg2Rad;
-        if (bodyType != BodyType2D.Kinematic) { TeleportRadians(new Float2(_pose.CurX, _pose.CurY), radians); return; }
+        if (bodyType != BodyType2D.Kinematic) { TeleportRadians(new Float2(Pose.CurX, Pose.CurY), radians); return; }
 
         BeginTarget();
         _targetAngle = radians;
-        _world.Simulation.World.QueueTransform(_handle, _targetX, _targetY, _targetAngle, true);
+        _world.Simulation.QueueTransform(_handle, _targetX, _targetY, _targetAngle, true);
     }
 
     // A MovePosition followed by a MoveRotation in the same step must produce one combined target, not two that
@@ -407,7 +412,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         int step = _world!.Simulation.StepIndex;
         if (_targetStep == step) return;
         _targetStep = step;
-        _targetX = _pose.CurX; _targetY = _pose.CurY; _targetAngle = _pose.CurAngle;
+        _targetX = Pose.CurX; _targetY = Pose.CurY; _targetAngle = Pose.CurAngle;
     }
 
     // ---- forces --------------------------------------------------------------------------
@@ -487,7 +492,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
 
     private bool CreateBody(PhysicsWorld2D world)
     {
-        int index = world.Simulation.RegisterBody(this);
+        int index = world.Simulation.RegisterBody();
         if (index < 0)
         {
             PhysicsWorld2D.ReportUnavailable();
@@ -496,10 +501,12 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
 
         Float2 p = TransformXY();
         float angle = TransformAngle();
-        _handle = PB2.BodyCreate((int)bodyType, p.X, p.Y, angle, index, gravityScale, linearDamping, angularDamping, (uint)BuildFlags());
+        _handle = PB2.BodyCreate((int)bodyType, p.X, p.Y, angle, index, gravityScale, linearDamping, angularDamping, BuildFlags());
         _index = index;
         _world = world;
-        _pose.Reset(p.X, p.Y, angle, world.Simulation.StepIndex);
+        _record = world.Simulation.BodyOf(index);
+        _record!.Native = _handle;
+        Pose.Reset(p.X, p.Y, angle, world.Simulation.StepIndex);
         _hasWritten = false;
         _targetStep = -1;
         _lastSyncedVersion = Transform.Version; // the initial pose is already in the body
@@ -515,6 +522,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         PB2.BodyDestroy(_handle); // takes any shapes still on it along
         _handle = 0;
         _index = -1;
+        _record = null;
         _world = null;
     }
 
@@ -574,7 +582,7 @@ public sealed class Rigidbody2D : MonoBehaviour, IBody2DHost
         PB2.BodySetType(_handle, (int)bodyType);
         PB2.BodySetGravityScale(_handle, gravityScale);
         PB2.BodySetDamping(_handle, linearDamping, angularDamping);
-        PB2.BodySetFlags(_handle, (uint)BuildFlags());
+        PB2.BodySetFlags(_handle, BuildFlags());
         ApplyMass();
     }
 }

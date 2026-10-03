@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using Prowl.Echo;
 using Prowl.Runtime.Physics2D;
-using Prowl.Runtime.Physics2D.Native;
+using Prowl.Native.Box2D;
 using Prowl.Vector;
 
 namespace Prowl.Runtime;
@@ -30,7 +30,7 @@ internal readonly struct ShapeSpec2D
 
     public float AbsScaleX => Collider2DGeometry.AbsScale(ScaleX);
     public float AbsScaleY => Collider2DGeometry.AbsScale(ScaleY);
-    public uint Flags => IsTrigger ? (uint)PB2ShapeFlags.Sensor : 0u;
+    public uint Flags => IsTrigger ? PB2.SfSensor : 0u;
 }
 
 /// <summary>
@@ -199,7 +199,7 @@ public abstract class Collider2D : MonoBehaviour, ICollider2DHost
         {
             Float3 p = Transform.Position;
             bodyX = p.X; bodyY = p.Y; bodyAngle = myAngle;
-            _ownBody = PB2.BodyCreate(PB2BodyType.Static, bodyX, bodyY, bodyAngle, -1, 1f, 0f, 0f, 0u);
+            _ownBody = PB2.BodyCreate(PB2.BodyStatic, bodyX, bodyY, bodyAngle, -1, 1f, 0f, 0f, 0u);
             body = _ownBody;
         }
 

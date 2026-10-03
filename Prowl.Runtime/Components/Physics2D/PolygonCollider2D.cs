@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using Prowl.Echo;
 using Prowl.Runtime.Physics2D;
-using Prowl.Runtime.Physics2D.Native;
+using Prowl.Native.Box2D;
 using Prowl.Vector;
 
 namespace Prowl.Runtime;
@@ -45,7 +45,7 @@ public sealed class PolygonCollider2D : Collider2D
         return n;
     }
 
-    private protected override unsafe void CreateShapes(uint body, ShapeSpec2D spec, List<uint> shapes)
+    private protected override void CreateShapes(uint body, ShapeSpec2D spec, List<uint> shapes)
     {
         int count = points?.Length ?? 0;
         if (count < 3 || count > MaxPoints)
@@ -56,9 +56,7 @@ public sealed class PolygonCollider2D : Collider2D
 
         float[] xy = new float[MaxPoints * 2];
         int n = Place(spec, xy);
-        uint id;
-        fixed (float* p = xy)
-            id = PB2.ShapeCreatePolygon(body, spec.ColliderIndex, spec.Layer, p, n, 0f, spec.Density, spec.Friction, spec.Bounciness, spec.Flags);
+        uint id = PB2.ShapeCreatePolygon(body, spec.ColliderIndex, spec.Layer, xy, n, 0f, spec.Density, spec.Friction, spec.Bounciness, spec.Flags);
 
         if (id == 0)
         {

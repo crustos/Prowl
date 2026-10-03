@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using Prowl.Echo;
 using Prowl.Runtime.Physics2D;
-using Prowl.Runtime.Physics2D.Native;
+using Prowl.Native.Box2D;
 using Prowl.Vector;
 
 namespace Prowl.Runtime;
@@ -58,7 +58,7 @@ public sealed class EdgeCollider2D : Collider2D
         return xy;
     }
 
-    private protected override unsafe void CreateShapes(uint body, ShapeSpec2D spec, List<uint> shapes)
+    private protected override void CreateShapes(uint body, ShapeSpec2D spec, List<uint> shapes)
     {
         int n;
         float[] xy = Place(spec, out n);
@@ -70,10 +70,7 @@ public sealed class EdgeCollider2D : Collider2D
 
         int segments = isLoop ? n : n - 1;
         uint[] ids = new uint[segments];
-        int made;
-        fixed (float* p = xy)
-        fixed (uint* o = ids)
-            made = PB2.SegmentsCreate(body, spec.ColliderIndex, spec.Layer, p, n, isLoop ? 1 : 0, spec.Friction, spec.Bounciness, o);
+        int made = PB2.SegmentsCreate(body, spec.ColliderIndex, spec.Layer, xy, n, isLoop ? 1 : 0, spec.Friction, spec.Bounciness, ids);
 
         for (int i = 0; i < made; i++) shapes.Add(ids[i]);
     }

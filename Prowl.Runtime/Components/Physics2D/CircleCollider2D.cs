@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using Prowl.Echo;
 using Prowl.Runtime.Physics2D;
-using Prowl.Runtime.Physics2D.Native;
+using Prowl.Native.Box2D;
 using Prowl.Vector;
 
 namespace Prowl.Runtime;

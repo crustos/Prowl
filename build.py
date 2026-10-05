@@ -14,6 +14,9 @@ Commands (the default, with none, is `all`):
     test      the 2D physics tests (Native/Box2D/Tests/Box2DSmoke); add --managed to also `dotnet test` Prowl.Runtime.Test
     scan      how much of the 2D engine can CCSharp translate to C?   (tools/ccsharp/ccsharp_scan.py; args after -- go to it)
     ccsharp   translate-and-run conformance: the 2D math as C, built with gcc, compared with real .NET
+    player    translate a game to C and build a native player with no .NET in it:  player GAME [--verify] [--static] [--run] [--sanitize] [--dotnet]
+              (GAME is a folder of .cs files with a static Main; tools/ccsharp/player_build.py has the details)
+    samples   every folder of Samples/ (or the named ones), built as a player and compared with the same game on .NET: samples [NAME..] [--sanitize]
     check3d   does the 3D switch still hold? compiles with and without 3D and compares   (tools/check_physics3d.py)
     status    what was found where
     clean     remove what this script built
@@ -202,6 +205,48 @@ def cmd_ccsharp(a):
     run([sys.executable, os.path.join(ROOT, "tools", "ccsharp", "ccsharp_scan.py"), "conformance"])
 
 
+PLAYER_BUILD = os.path.join(ROOT, "tools", "ccsharp", "player_build.py")
+
+
+def player_flags(a):
+    return [f for f, on in (("--verify", a.verify), ("--static", a.static), ("--run", a.run), ("--sanitize", a.sanitize), ("--dotnet", a.dotnet)) if on]
+
+
+def cmd_player(a):
+    if not a.game:
+        sys.exit("player needs a GAME folder, e.g.  python3 build.py player Samples/Headless2D --verify --run")
+    ccsharp_ready()
+    run([sys.executable, PLAYER_BUILD, a.game] + player_flags(a))
+
+
+def cmd_samples(a):
+    """Builds each folder of Samples/ as a player and compares it with .NET (and, with --sanitize, runs it under the sanitizers); prints a table."""
+    ccsharp_ready()
+    d = os.path.join(ROOT, "Samples")
+    names = [n for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n))] if os.path.isdir(d) else []
+    wanted = [a.game] + a.more if a.game else []
+    if wanted:
+        names = [n for n in names if n in wanted]
+    if not names:
+        sys.exit("no samples to run")
+    results = []
+    for n in names:
+        say("sample " + n)
+        r = subprocess.run([sys.executable, PLAYER_BUILD, os.path.join("Samples", n), "--verify"] + (["--sanitize"] if a.sanitize else []),
+                           cwd=ROOT, capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        ok = r.returncode == 0 and "verify    ok" in out and (not a.sanitize or "sanitize  ok" in out or "sanitize  skipped" in out)
+        why = "" if ok else next((l.strip() for l in out.splitlines() if "FAIL" in l or "error" in l or "differ" in l), "see: python3 build.py player Samples/%s --verify" % n)
+        results.append((n, ok, why))
+    print()
+    for n, ok, why in results:
+        print("   %-24s %s  %s" % (n, "ok  " if ok else "FAIL", why[:150]))
+    bad = [n for n, ok, _ in results if not ok]
+    print("\n   %d of %d passed" % (len(results) - len(bad), len(results)))
+    if bad:
+        sys.exit(1)
+
+
 def cmd_check3d(a):
     run([sys.executable, os.path.join(ROOT, "tools", "check_physics3d.py")])
 
@@ -234,7 +279,7 @@ def cmd_clean(a):
 
 
 COMMANDS = {"all": cmd_all, "deps": cmd_deps, "native": cmd_native, "managed": cmd_managed, "test": cmd_test, "scan": cmd_scan,
-            "ccsharp": cmd_ccsharp, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
+            "ccsharp": cmd_ccsharp, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
 
 
 def main():
@@ -245,6 +290,13 @@ def main():
         argv, rest = argv[:i], argv[i + 1:]
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1], formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n", 2)[2])
     ap.add_argument("command", nargs="?", default="all", choices=sorted(COMMANDS))
+    ap.add_argument("game", nargs="?", help="player / samples: the game folder (samples: a sample's name)")
+    ap.add_argument("more", nargs="*", help="samples: more sample names")
+    ap.add_argument("--verify", action="store_true", help="player: also run the game on .NET and require the same output")
+    ap.add_argument("--static", action="store_true", help="player: link a fully static executable")
+    ap.add_argument("--run", action="store_true", help="player: run the built player and show its output")
+    ap.add_argument("--sanitize", action="store_true", help="player / samples: also run the translated C under AddressSanitizer and UBSan")
+    ap.add_argument("--dotnet", action="store_true", help="player: only run the game on .NET (the reference)")
     ap.add_argument("--3d", dest="three_d", action="store_true", help="also compile the unmaintained 3D physics (default: 2D only)")
     ap.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"], help="build configuration (default Release)")
     ap.add_argument("--avx2", action="store_true", help="native: build Box2D with AVX2 (faster, needs an AVX2 CPU; default is portable)")

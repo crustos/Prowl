@@ -378,7 +378,9 @@ python3 build.py test          # the 261 checks (builds the native library first
 | `managed` | `dotnet build Prowl.slnx` |
 | `test [--managed] [--bench]` | the 2D physics tests; `--managed` also runs `Prowl.Runtime.Test` |
 | `scan [-- -v --json f]` | how much of the 2D engine CCSharp can translate, and what refuses |
-| `ccsharp` | translate the 2D math to C, build it, run it, and diff with real .NET |
+| `ccsharp` | translate the 2D math, the simulation core, contact events, the pixel terrain and the shattering geometry to C, build them, run them, and diff with real .NET |
+| `player GAME [--verify --static --run --sanitize --dotnet]` | translate a game written against `Prowl.Core2D` to C and build a native player with no .NET in it; `--verify` also runs it on .NET and requires the same output |
+| `samples [NAME..] [--sanitize]` | every folder of `Samples/` as a player, against .NET, optionally under AddressSanitizer and UBSan |
 | `check3d` | does the 3D on/off switch still hold? (needs no NuGet) |
 | `status`, `clean` | where everything was found; remove what the script built |
 
@@ -397,6 +399,9 @@ Roslyn against reference assemblies, and CCSharp's 73 tests from a fresh clone. 
 | `Prowl.Runtime/Physics2D/` | the engine-independent 2D core: simulation, the integer tables (handles, triggers, joint links), the object registry on top of them, pose interpolation, collider geometry and outlines |
 | `Prowl.Runtime/Physics2D/Native/` | the C# bindings to the shim (no other Prowl dependency) |
 | `Prowl.Runtime/Physics2D/Engine/` | `PhysicsWorld2D` and the public types: `Collision2D`, `RaycastHit2D`, `QueryFilter2D` |
+| `Prowl.Runtime/Destruction2D/` | the shared core of destructible terrain and shattering sprites (pure code, linked by `Prowl.Runtime` and `Prowl.Core2D`; see its README) |
+| `Prowl.Core2D/` | the 2D runtime that translates to C, and its terrain (`PixelTerrain2D`) and shattering (`Shatter2D`) |
+| `Samples/` | headless games: the check of the C build, run by `build.py samples` |
 | `Prowl.Runtime/Components/Physics2D/` | `Rigidbody2D`, the colliders and the joints (`Joint2D` and its seven types) |
 | `Prowl.Runtime/PhysicsCommon/` | what 2D and 3D share (collision matrix, force modes) |
 | `Native/Box2D/` | the C shim, its CMake project, and the test harness |
@@ -433,6 +438,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Two things are useful beyond the usual: 
 Prowl is [ProwlEngine/Prowl](https://github.com/ProwlEngine/Prowl) (copyright Michael Sakharov, see [LICENSE](LICENSE)) and its contributors, and this fork is built on that work. The editor, renderer, audio, UI and asset
 pipeline are theirs. Box2D is by Erin Catto. [Crust](https://github.com/brentharts/crust) and the Box2D-Packed additions (`box2d_pack.py`, intrusive execution, the 4-byte handles) are by Brent Hartshorn. Hat tip to
 [Raylib](https://github.com/raysan5/raylib), which shaved hours off Prowl's early development.
+
+The pixel terrain and the shattering of sprites in `Prowl.Runtime/Destruction2D` are ported from [DTerrain](https://github.com/crustos/DTerrain) (Dominik Zimny) and [Unity-2D-Destruction](https://github.com/crustos/Unity-2D-Destruction) (Matthew Holtzem), both MIT.
 
 ### Upstream contributors
 

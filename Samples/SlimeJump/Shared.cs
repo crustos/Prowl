@@ -19,6 +19,7 @@ static class Shared
     public const int TagGoal = 6;
     public const int TagBulletPlayer = 7;
     public const int TagBulletEnemy = 8;
+    public const int TagArrow = 9;
     public const int TagEnemyBase = 100;        // enemy i has Tag TagEnemyBase + i
 
     public static bool Won;
@@ -54,6 +55,11 @@ static class Shared
     static bool[] gemCollected;
     static bool[] saveTouched;
     static int gemCount;
+
+    static Node[] crumblyNodes;
+    static float[] crumblyAlpha;
+    static bool[] crumblyReset;
+    static int crumblyCount;
 
     static Node[] enemyNodes;
     static float[] enemyX;
@@ -139,6 +145,41 @@ static class Shared
                 SetB(gemPending, i, false);
                 Scene2D.Current.SetActive(GetN(gemNodes, i), true);
             }
+    }
+
+    // ---- crumbly walls ----
+    public static void InitCrumbly(int count)
+    {
+        crumblyCount = count;
+        crumblyNodes = new Node[count + 1];
+        crumblyAlpha = new float[count + 1];
+        crumblyReset = new bool[count + 1];
+        for (int i = 0; i < count; i++) SetF(crumblyAlpha, i, 1f);
+    }
+
+    public static void RegisterCrumbly(int i, Node n) { SetN(crumblyNodes, i, n); }
+    public static float CrumblyAlpha(int i) { return GetF(crumblyAlpha, i); }
+    public static void SetCrumblyAlpha(int i, float a) { SetF(crumblyAlpha, i, a); }
+    public static bool CrumblyResetFlag(int i) { return GetB(crumblyReset, i); }
+    public static void ClearCrumblyReset(int i) { SetB(crumblyReset, i, false); }
+
+    public static int CrumbledCount()
+    {
+        int n = 0;
+        for (int i = 0; i < crumblyCount; i++)
+            if (GetF(crumblyAlpha, i) <= 0f) n++;
+        return n;
+    }
+
+    // On respawn every crumbly wall comes back whole.
+    public static void ResetCrumbly()
+    {
+        for (int i = 0; i < crumblyCount; i++)
+        {
+            SetB(crumblyReset, i, true);
+            SetF(crumblyAlpha, i, 1f);
+            Scene2D.Current.SetActive(GetN(crumblyNodes, i), true);
+        }
     }
 
     // ---- enemies ----
@@ -233,7 +274,7 @@ static class Shared
         for (int i = 0; i < scene.NodeHighWater; i++)
         {
             Node b = scene.NodeAt(i);
-            if (b != null && b.Alive && !b.Destroyed && (b.Tag == TagBulletPlayer || b.Tag == TagBulletEnemy))
+            if (b != null && b.Alive && !b.Destroyed && (b.Tag == TagBulletPlayer || b.Tag == TagBulletEnemy || b.Tag == TagArrow))
                 scene.Destroy(b);
         }
     }
@@ -243,5 +284,6 @@ static class Shared
         ResetGems();
         ResetEnemies();
         ResetBullets();
+        ResetCrumbly();
     }
 }

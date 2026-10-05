@@ -314,12 +314,25 @@ class BulletScript
 
     public static void Spawn(float x, float y, float vx, float vy, float damage, float life, bool fromPlayer)
     {
+        int tag = Shared.TagBulletEnemy;
+        if (fromPlayer) tag = Shared.TagBulletPlayer;
+        SpawnTagged(x, y, vx, vy, damage, life, fromPlayer, tag);
+    }
+
+    // An arrow from a shooter trap: an enemy bullet that is drawn as an arrow.
+    public static void SpawnArrow(float x, float y, float vx, float vy, float damage, float life)
+    {
+        SpawnTagged(x, y, vx, vy, damage, life, false, Shared.TagArrow);
+    }
+
+    static void SpawnTagged(float x, float y, float vx, float vy, float damage, float life, bool fromPlayer, int tag)
+    {
         Scene2D sc = Scene2D.Current;
         Node n = sc.NewNode(null);
         if (n == null) return;
         n.SetPosition(x, y);
-        if (fromPlayer) n.Tag = Shared.TagBulletPlayer;
-        else n.Tag = Shared.TagBulletEnemy;
+        n.SetAngle(MathF.Atan2(vy, vx));                // the renderer draws the bullet along its flight
+        n.Tag = tag;
         BulletScript b = Scripts.AddBulletScript(n);
         if (b == null)
         {

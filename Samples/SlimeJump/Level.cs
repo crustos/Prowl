@@ -28,6 +28,12 @@ static class Level
     static float[] Anchors;
     public static int AnchorCount;
     public static float Anchor(int i, int k) { return At(Anchors, i * 2 + k); }
+    static float[] Crumbles;
+    public static int CrumblyCount;
+    public static float CrumblyTile(int i, int k) { return At(Crumbles, i * 4 + k); }
+    static float[] Shooters;
+    public static int ShooterCount;
+    public static float Shooter(int i, int k) { return At(Shooters, i * 4 + k); }
     static float[] Enemies;
     public static int EnemyCount;
     public static int EnemyKind(int i) { return (int)At(Enemies, i * 3); }
@@ -64,6 +70,8 @@ static class Level
         Set2(Gems, 1, 45.5f, 6.5f);
         Set2(Gems, 2, 58.5f, 15.5f);
         Anchors = new float[2]; AnchorCount = 0;
+        Crumbles = new float[4]; CrumblyCount = 0;
+        Shooters = new float[4]; ShooterCount = 0;
         Enemies = new float[6]; EnemyCount = 2;
         Enemies[0] = 0; Enemies[1] = 41.5f; Enemies[2] = 4.3f;
         Enemies[3] = 1; Enemies[4] = 60.5f; Enemies[5] = 16.5f;

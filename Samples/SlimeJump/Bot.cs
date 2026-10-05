@@ -106,6 +106,18 @@ class BotScript
         }
         else if (Shared.PlayerJumping)
             jump = true;                                   // full-height jumps
+        // an arrow coming straight at us along the floor: jump it
+        if (Shared.PlayerGrounded && !Shared.PlayerClimbing && !Shared.LassoAttached)
+        {
+            for (int i = 0; i < scene.NodeHighWater; i++)
+            {
+                Node a = scene.NodeAt(i);
+                if (a == null || !a.Alive || a.Destroyed || a.Tag != Shared.TagArrow) continue;
+                float adx = a.WorldX() - x;
+                float ady = a.WorldY() - y;
+                if (MathF.Abs(ady) < 0.9f && MathF.Abs(adx) < 6.5f && adx * MathF.Cos(a.WorldAngle()) < 0f) jump = true;
+            }
+        }
         InputState.Move = dir;
         InputState.Jump = jump;
     }

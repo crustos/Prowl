@@ -76,6 +76,24 @@ static class Game
             gs.Index = i;
             Shared.RegisterGem(i, n);
         }
+        Shared.InitCrumbly(Level.CrumblyCount);
+        for (int i = 0; i < Level.CrumblyCount; i++)
+        {
+            // each collider is 0.04 wider than its tile, so neighbours overlap: with exactly flush boxes the slime catches on the seam (a ghost collision)
+            Node cn = MakeBox(scene, Level.CrumblyTile(i, 0) + 0.5f, Level.CrumblyTile(i, 1) + 0.5f, Level.CrumblyTile(i, 2) + 0.04f, Level.CrumblyTile(i, 3), Layers.Wall, Shared.TagWall, false, 0f);
+            CrumblyScript cs = Scripts.AddCrumblyScript(cn);
+            cs.Index = i;
+            Shared.RegisterCrumbly(i, cn);
+        }
+        for (int i = 0; i < Level.ShooterCount; i++)
+        {
+            // the shooter's tile is already part of the walls: this node only carries the trap
+            Node sn = scene.NewNode(null);
+            sn.SetPosition(Level.Shooter(i, 0), Level.Shooter(i, 1));
+            ShooterScript ss = Scripts.AddShooterScript(sn);
+            ss.DirX = Level.Shooter(i, 2);
+            ss.DirY = Level.Shooter(i, 3);
+        }
         Shared.InitEnemies(Level.EnemyCount);
         for (int i = 0; i < Level.EnemyCount; i++)
         {
@@ -153,7 +171,7 @@ static class Game
         int slain = 0;
         for (int i = 0; i < Shared.EnemyCount(); i++)
             if (!Shared.EnemyAlive(i)) slain++;
-        Console.WriteLine("won=" + won + " frame=" + wonFrame + " deaths=" + Shared.Deaths + " gems=" + Shared.Gems + " enemies=" + Shared.EnemyCount() + " slain=" + slain);
+        Console.WriteLine("won=" + won + " frame=" + wonFrame + " deaths=" + Shared.Deaths + " gems=" + Shared.Gems + " enemies=" + Shared.EnemyCount() + " slain=" + slain + " crumbled=" + Shared.CrumbledCount());
         Console.WriteLine("first jump frame=" + firstJump + " first climb frame=" + firstClimb);
         Console.WriteLine("max x*1000=" + Milli(maxX) + " max y*1000=" + Milli(maxY) + " end x*1000=" + Milli(player.WorldX()) + " y*1000=" + Milli(player.WorldY()));
         return won == 1 ? 0 : 1;

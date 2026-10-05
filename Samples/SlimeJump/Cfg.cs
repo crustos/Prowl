@@ -12,6 +12,11 @@ static class Cfg
     public const float RespawnDelay = 0.5f;
     public const float ColliderW = 0.9f;
     public const float ColliderH = 0.75f;
+    public const float CrumblyDissolveTime = 1f;
+    public const float ArrowSpeed = 9f;
+    public const float ArrowLifetime = 10f;
+    public const float ArrowDamage = 1f;
+    public const float ShooterCooldown = 1f;
     public const float ShootCooldown = 0.35f;
     public const float BulletSpeed = 30f;
     public const float BulletDamage = 1f;

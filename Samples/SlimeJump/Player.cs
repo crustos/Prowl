@@ -206,6 +206,7 @@ class PlayerScript
     {
         Shared.DeathRequested = false;
         Shared.Deaths++;
+        Console.WriteLine("death " + Shared.Deaths + " step=" + scene.FixedIndex + " x*1000=" + (int)(node.WorldX() * 1000f) + " y*1000=" + (int)(node.WorldY() * 1000f));
         lockTimer = Cfg.RespawnDelay;
         IsJumping = false;
         IsClimbing = false;

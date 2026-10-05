@@ -17,4 +17,8 @@ internal static class CoreLimits
 
     /// <summary>Floats per sprite in a draw batch. Must equal GFX_SPRITE_FLOATS in Native/Gfx2D/gfx2d.h (player_build.py checks).</summary>
     public const int SpriteFloats = 12;
+    public const int Meshes = 256;
+    public const int MeshVertices = 8;            // a polygon of a mesh: convex, at most as many points as a native polygon shape
+    public const int MeshVertexFloats = 8;        // x, y, u, v, r, g, b, a
+    public const int MeshBatchFloats = Meshes * (MeshVertices - 2) * 3 * MeshVertexFloats;   // a triangle list of the most triangles all the meshes can make
 }

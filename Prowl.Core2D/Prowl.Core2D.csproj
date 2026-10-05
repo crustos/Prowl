@@ -2,7 +2,7 @@
 
   <!--
     The 2D runtime that translates to C: nodes, components, the scene's lifecycle, the physics components and the simulation core under them.
-    This file is the ONE list of what it is. The .NET build compiles it; `python3 build.py player` reads the same list (the items marked
+    This file is the ONE list of what it is. An item marked Feature="x" is translated only for a game that names that feature (tools/ccsharp/ccsharp_scan.py FEATURES). The .NET build compiles it; `python3 build.py player` reads the same list (the items marked
     CBuild="false" are the .NET-only bindings, which the C build replaces with the generated C flavor) and translates it with the game's
     scripts. Add a file here and both builds have it.
 
@@ -28,12 +28,30 @@
     <Compile Include="..\Prowl.Runtime\Physics2D\Collider2DGeometry.cs" />
     <Compile Include="..\Prowl.Runtime\Physics2D\HandleTable.cs" />
     <Compile Include="..\Prowl.Runtime\Physics2D\TriggerSet.cs" />
+    <Compile Include="..\Prowl.Runtime\Physics2D\ContactSet.cs" />
     <Compile Include="..\Prowl.Runtime\Physics2D\BodyRecord.cs" />
     <Compile Include="..\Prowl.Runtime\Physics2D\JointRecord.cs" />
     <Compile Include="..\Prowl.Runtime\Physics2D\Registry2D.cs" />
     <Compile Include="..\Prowl.Runtime\Physics2D\SimCore2D.cs" />
   </ItemGroup>
 
+  <ItemGroup Label="Pixel terrain (shared with Prowl.Runtime; a game that uses it)">
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelMath.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelRange.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelColumn.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\StampShape.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelRect.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelQuadTree.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelRectMerge.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelTerrainLimits.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelChunk.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelChainTrace.cs" Feature="terrain" />
+  </ItemGroup>
+  <ItemGroup Label="Shattering (shared with Prowl.Runtime; a game that uses it)">
+    <Compile Include="..\Prowl.Runtime\Destruction2D\Shatter\PolySet.cs" Feature="destruction" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\Shatter\Fracturer.cs" Feature="destruction" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\Shatter\ExplodeOptions.cs" Feature="destruction" />
+  </ItemGroup>
   <ItemGroup Label="Native bindings (.NET flavor; the C build uses the generated C flavor instead)">
     <Compile Include="..\Prowl.Runtime\Physics2D\Native\PB2.Generated.cs" CBuild="false" />
   </ItemGroup>
@@ -47,8 +65,11 @@
     <Compile Include="Collider2D.cs" />
     <Compile Include="World2D.cs" />
     <Compile Include="SpriteRenderer2D.cs" />
+    <Compile Include="MeshRenderer2D.cs" />
     <Compile Include="Renderer2D.cs" />
     <Compile Include="Scene2D.cs" />
+    <Compile Include="PixelTerrain2D.cs" Feature="terrain" />
+    <Compile Include="Shatter2D.cs" Feature="destruction" />
   </ItemGroup>
 
 </Project>

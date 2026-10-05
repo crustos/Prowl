@@ -39,6 +39,9 @@ internal static class ComponentKind
     public const int BoxCollider2D = 2;
     public const int CircleCollider2D = 3;
     public const int SpriteRenderer2D = 4;
+    public const int PolygonCollider2D = 5;
+    public const int MeshRenderer2D = 6;
+    public const int TerrainCollider2D = 7;
     public const int FirstScript = 100;
 }
 
@@ -60,6 +63,7 @@ internal sealed class Component
     public Rigidbody2D Body;             // the payload of a Rigidbody2D, else null
     public Collider2D Collider;          // the payload of a collider, else null
     public SpriteRenderer2D Sprite;      // the payload of a SpriteRenderer2D, else null
+    public MeshRenderer2D Mesh;          // the payload of a MeshRenderer2D, else null
 
     public bool Enabled;                 // set by the game
     public bool EnabledInHierarchy;      // Enabled, and the node active all the way up, and not destroyed: what callbacks follow
@@ -80,6 +84,7 @@ internal sealed class Component
         Body = null;
         Collider = null;
         Sprite = null;
+        Mesh = null;
         Enabled = true;
         EnabledInHierarchy = false;
         HasStarted = false;

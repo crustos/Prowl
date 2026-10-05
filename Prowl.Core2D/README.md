@@ -12,7 +12,15 @@ Scene2D       nodes, components, which are active, and the order the game's call
 Rigidbody2D, Collider2D, World2D    the physics components and what connects them to the simulation core (SimCore2D)
 SpriteRenderer2D, Renderer2D        a coloured box or disc on a node, and the draw batch of all of them that a renderer is handed
 [Script]      marks a class of the game's as a script; tools/ccsharp/gen_scripts.py writes the call sink for it
+MeshRenderer2D          a convex polygon with texture coordinates and a tint, and the triangle list of all of them a renderer is handed
+PolygonCollider2D       a convex collider of up to 8 points (Collider2D.Polygon)
+PixelTerrain2D          destructible terrain: a bitmap you can dig and build, with box or chain colliders (Feature "terrain")
+Shatter2D               breaks a node with a box or polygon collider into fragments, and pushes things away from a point (Feature "destruction")
 ```
+
+`PixelTerrain2D` and `Shatter2D` are in the C build only for a game that names them (a `Feature=` item of `Prowl.Core2D.csproj`); the pure code under them is
+`Prowl.Runtime/Destruction2D`, shared with the engine. A ball that touches the terrain is told, like any collision, once per chunk: see `Samples/Terrain2D`.
+
 
 ## Writing a game
 

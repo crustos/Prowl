@@ -44,6 +44,7 @@ internal sealed class World2D
     private List<Collider2D> _colliders;     // enabled colliders that have a native shape
     private List<Collider2D> _byIndex;       // the collider of each simulation collider slot, null where none
     private List<Collider2D> _scratch;
+    private float[] _poly;                   // a polygon's points on their way to the native shape
     private bool _streaming;
 
     public World2D()
@@ -57,6 +58,7 @@ internal sealed class World2D
         _colliders = new List<Collider2D>();
         _byIndex = new List<Collider2D>();
         _scratch = new List<Collider2D>();
+        _poly = new float[CoreLimits.MeshVertices * 2];
     }
 
     // ---- making components ---------------------------------------------------------------
@@ -94,8 +96,8 @@ internal sealed class World2D
         return rb;
     }
 
-    /// <summary>A BoxCollider2D (<paramref name="circle"/> false) or CircleCollider2D on a node, not yet enabled.</summary>
-    public Collider2D NewCollider(Scene2D scene, Node node, bool circle)
+    /// <summary>A collider of a <see cref="Collider2D"/> shape kind (Box, Circle or Polygon) on a node, not yet enabled.</summary>
+    public Collider2D NewCollider(Scene2D scene, Node node, int shapeKind)
     {
         int slot;
         if (_colFree.Count > 0)
@@ -115,8 +117,12 @@ internal sealed class World2D
             col = new Collider2D();
             _colPool[slot] = col;
         }
-        col.Reset(circle ? Collider2D.Circle : Collider2D.Box);
-        Component c = scene.Create(node, circle ? ComponentKind.CircleCollider2D : ComponentKind.BoxCollider2D, slot, 0, 0);
+        col.Reset(shapeKind);
+        int kind = ComponentKind.BoxCollider2D;
+        if (shapeKind == Collider2D.Circle) kind = ComponentKind.CircleCollider2D;
+        else if (shapeKind == Collider2D.Polygon) kind = ComponentKind.PolygonCollider2D;
+        else if (shapeKind == Collider2D.Terrain) kind = ComponentKind.TerrainCollider2D;
+        Component c = scene.Create(node, kind, slot, 0, 0);
         if (c == null)
         {
             _colFree.Add(slot);
@@ -127,25 +133,30 @@ internal sealed class World2D
         return col;
     }
 
+    private static bool IsColliderKind(int kind)
+    {
+        return kind == ComponentKind.BoxCollider2D || kind == ComponentKind.CircleCollider2D || kind == ComponentKind.PolygonCollider2D || kind == ComponentKind.TerrainCollider2D;
+    }
+
     // ---- the scene's hooks ---------------------------------------------------------------
 
     public void EnableComponent(Scene2D scene, Component c)
     {
         if (c.Kind == ComponentKind.Rigidbody2D) EnableBody(scene, c.Body);
-        else if (c.Kind == ComponentKind.BoxCollider2D || c.Kind == ComponentKind.CircleCollider2D) EnableCollider(scene, c.Collider);
+        else if (IsColliderKind(c.Kind)) EnableCollider(scene, c.Collider);
     }
 
     public void DisableComponent(Scene2D scene, Component c)
     {
         if (c.Kind == ComponentKind.Rigidbody2D) DisableBody(scene, c.Body);
-        else if (c.Kind == ComponentKind.BoxCollider2D || c.Kind == ComponentKind.CircleCollider2D) DestroyShape(c.Collider);
+        else if (IsColliderKind(c.Kind)) DestroyShape(c.Collider);
     }
 
     /// <summary>The component's record is being recycled: its payload goes back to its pool, and the native world is given back when nothing is left.</summary>
     public void FreeComponent(Component c)
     {
         if (c.Kind == ComponentKind.Rigidbody2D) _rbFree.Add(c.Slot);
-        else if (c.Kind == ComponentKind.BoxCollider2D || c.Kind == ComponentKind.CircleCollider2D) _colFree.Add(c.Slot);
+        else if (IsColliderKind(c.Kind)) _colFree.Add(c.Slot);
         else return;
         if (Sim.HasWorld && Sim.IsIdle) Sim.Release();
     }
@@ -153,6 +164,19 @@ internal sealed class World2D
     private void EnsureWorld()
     {
         if (!Sim.HasWorld) Sim.Acquire();
+    }
+
+    /// <summary>Makes sure the native world exists and keeps it alive until <see cref="UnpinWorld"/>: for things that put bodies in it without registering them (terrain).</summary>
+    public void PinWorld()
+    {
+        EnsureWorld();
+        Sim.Pins++;
+    }
+
+    public void UnpinWorld()
+    {
+        if (Sim.Pins > 0) Sim.Pins--;
+        if (Sim.HasWorld && Sim.IsIdle) Sim.Release();
     }
 
     // ---- bodies --------------------------------------------------------------------------
@@ -259,6 +283,11 @@ internal sealed class World2D
     private void BuildCollider(Scene2D scene, Collider2D col)
     {
         if (col.ColliderIndex >= 0) return;
+        if (col.ShapeKind == Collider2D.Terrain)
+        {
+            BuildTerrainCollider(col);
+            return;
+        }
         Node n = col.Self.Node;
         Rigidbody2D rb = FindBody(scene, n);
         float myAngle = n.WorldAngle();
@@ -297,6 +326,20 @@ internal sealed class World2D
             float hh = MathF.Max(col.SizeY, 0.001f) * 0.5f * sy;
             shape = PB2.ShapeCreateBox(body, index, n.Layer, hw, hh, lx, ly, la, 0f, col.Density, col.Friction, col.Bounciness, flags);
         }
+        else if (col.ShapeKind == Collider2D.Polygon)
+        {
+            // each point: node space -> world (the node's scale and turn) -> the body's space
+            float cs = MathF.Cos(-bodyAngle), sn = MathF.Sin(-bodyAngle);
+            for (int i = 0; i < col.PolyCount; i++)
+            {
+                float wx, wy;
+                n.ToWorld(col.Poly[2 * i], col.Poly[2 * i + 1], out wx, out wy);
+                float dx = wx - bodyX, dy = wy - bodyY;
+                _poly[2 * i] = dx * cs - dy * sn;
+                _poly[2 * i + 1] = dx * sn + dy * cs;
+            }
+            shape = PB2.ShapeCreatePolygon(body, index, n.Layer, _poly, col.PolyCount, 0f, col.Density, col.Friction, col.Bounciness, flags);
+        }
         else
         {
             float r = MathF.Max(col.Radius, 0.001f) * MathF.Max(sx, sy);
@@ -319,10 +362,27 @@ internal sealed class World2D
         _colliders.Add(col);
     }
 
+    /// <summary>
+    /// A collider with no shape of its own: a collider index (what contact events name) and a static body at its node. Whoever owns it builds the
+    /// shapes on <c>OwnBody</c>, with this index, and tells <c>Sim.ShapesVanishing</c> before it destroys and rebuilds them.
+    /// </summary>
+    private void BuildTerrainCollider(Collider2D col)
+    {
+        Node n = col.Self.Node;
+        col.OwnBody = PB2.BodyCreate(PB2.BodyStatic, n.WorldX(), n.WorldY(), n.WorldAngle(), -1, 1f, 0f, 0f, 0u);
+        if (col.OwnBody == 0) return;
+        int index = Sim.Registry.AddCollider();
+        col.Shape = 0;
+        col.ColliderIndex = index;
+        col.Attached = null;
+        SetByIndex(index, col);
+        _colliders.Add(col);
+    }
+
     private void DestroyShape(Collider2D col)
     {
         if (col.ColliderIndex < 0) return;
-        PB2.ShapeDestroy(col.Shape);
+        if (col.Shape != 0) PB2.ShapeDestroy(col.Shape);
         if (col.OwnBody != 0)
         {
             PB2.BodyDestroy(col.OwnBody);
@@ -351,6 +411,9 @@ internal sealed class World2D
         while (_byIndex.Count <= index) _byIndex.Add(none);
         _byIndex[index] = col;
     }
+
+    /// <summary>The collider in a simulation collider slot (what a query returns), null if none.</summary>
+    public Collider2D ColliderByIndex(int index) { return GetByIndex(index); }
 
     private Collider2D GetByIndex(int index)
     {

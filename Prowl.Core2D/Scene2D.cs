@@ -464,7 +464,7 @@ internal sealed class Scene2D
     public Collider2D NewBoxCollider(Node n, float width, float height)
     {
         if (!IsLive(n)) return null;
-        Collider2D col = Physics.NewCollider(this, n, false);
+        Collider2D col = Physics.NewCollider(this, n, Collider2D.Box);
         if (col != null)
         {
             col.SizeX = width;
@@ -477,8 +477,24 @@ internal sealed class Scene2D
     public Collider2D NewCircleCollider(Node n, float radius)
     {
         if (!IsLive(n)) return null;
-        Collider2D col = Physics.NewCollider(this, n, true);
+        Collider2D col = Physics.NewCollider(this, n, Collider2D.Circle);
         if (col != null) col.Radius = radius;
+        return col;
+    }
+
+    /// <summary>
+    /// A convex polygon collider on a node, not yet enabled: <paramref name="count"/> points of <paramref name="xy"/> (x, y pairs, in the node's space,
+    /// before its scale), at most <see cref="CoreLimits.MeshVertices"/>. Null if there are too many or too few, or all colliders are in use.
+    /// </summary>
+    public Collider2D NewPolygonCollider(Node n, float[] xy, int count)
+    {
+        if (!IsLive(n) || count < 3 || count > CoreLimits.MeshVertices) return null;
+        Collider2D col = Physics.NewCollider(this, n, Collider2D.Polygon);
+        if (col != null)
+        {
+            col.PolyCount = count;
+            for (int i = 0; i < count * 2; i++) col.Poly[i] = xy[i];
+        }
         return col;
     }
 
@@ -493,6 +509,25 @@ internal sealed class Scene2D
     public Collider2D AddBoxCollider(Node n, float width, float height)
     {
         Collider2D col = NewBoxCollider(n, width, height);
+        if (col != null) Finish(col.Self);
+        return col;
+    }
+
+    public Collider2D AddPolygonCollider(Node n, float[] xy, int count)
+    {
+        Collider2D col = NewPolygonCollider(n, xy, count);
+        if (col != null) Finish(col.Self);
+        return col;
+    }
+
+    /// <summary>
+    /// A terrain collider on a node, enabled at once: no shape of its own, a collider index and a static body at the node, for the terrain that owns it to
+    /// build its shapes on. Null if the node is not live or all colliders are in use.
+    /// </summary>
+    public Collider2D AddTerrainCollider(Node n)
+    {
+        if (!IsLive(n)) return null;
+        Collider2D col = Physics.NewCollider(this, n, Collider2D.Terrain);
         if (col != null) Finish(col.Self);
         return col;
     }
@@ -523,6 +558,19 @@ internal sealed class Scene2D
         Finish(sprite.Self);
         return sprite;
     }
+
+    /// <summary>
+    /// A convex polygon mesh on a node, not yet enabled: <paramref name="count"/> points of <paramref name="xy"/> in the node's space with their
+    /// texture coordinates <paramref name="uv"/>, drawn as a fan. Set its tint and layer, then <see cref="Finish"/> its <c>Self</c>. Null if there are too
+    /// many or too few points or all meshes are in use.
+    /// </summary>
+    public MeshRenderer2D NewMesh(Node n, float[] xy, float[] uv, int count)
+    {
+        return IsLive(n) ? Render.NewMesh(this, n, xy, uv, count) : null;
+    }
+
+    /// <summary>Fills <c>Render.MeshData</c> with the frame's meshes as a triangle list and returns how many vertices: hand both to the renderer.</summary>
+    public int CollectMeshes() { return Render.CollectMeshes(); }
 
     /// <summary>Fills <c>Render.DrawData</c> with the frame's sprites and returns how many: hand both to the renderer.</summary>
     public int CollectSprites() { return Render.Collect(); }
@@ -720,8 +768,8 @@ internal sealed class Scene2D
             Collision.Other = Physics.EventOther;
             Collision.X = Physics.EventX;
             Collision.Y = Physics.EventY;
-            Collision.NX = Physics.EventNX;
-            Collision.NY = Physics.EventNY;
+            Collision.NX = -Physics.EventNX;               // the core's normal points self to other; the message's points from the other toward self, as the engine's Collision2D.Normal does
+            Collision.NY = -Physics.EventNY;
             Collision.Impulse = Physics.EventImpulse;
             _eventBit = Physics.EventKind;
             _eventComp = _firstComp[self.Self.Node.Index];

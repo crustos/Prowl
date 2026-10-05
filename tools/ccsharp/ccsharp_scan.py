@@ -59,15 +59,40 @@ def rt(*parts):
     return os.path.join(RUNTIME, *parts)
 
 
-def CORE2D_FILES():
+# A Feature="x" item of Prowl.Core2D.csproj is translated only for a game that names something of that feature, so code a game does not use never holds it
+# back (a terrain a game does not have has no say in whether the game translates). The names are the identifiers a game writes to use it.
+FEATURES = {
+    "terrain": r"\b(PixelTerrain2D|StampShape|PixelChunk|PixelRange|PixelColumn|PixelRectMerge|PixelQuadTree|PixelChainTrace)\b",
+    "destruction": r"\b(Shatter2D|Fracturer|PolySet|ExplodeOptions)\b",
+}
+
+
+def features_used(game):
+    """Which of FEATURES the game's files name."""
+    used = set()
+    for path in (game or []):
+        with open(path, encoding="utf-8-sig") as f:
+            text = re.sub(r"//[^\n]*", "", f.read())
+        for name, pattern in FEATURES.items():
+            if re.search(pattern, text):
+                used.add(name)
+    return used
+
+
+def CORE2D_FILES(game=None):
     """Everything the 2D runtime is made of, in build order, read from Prowl.Core2D/Prowl.Core2D.csproj: the one list both the .NET build and the C
-    build use. Items marked CBuild="false" (the .NET-only native bindings) are left out: the C build uses the generated C flavor."""
+    build use. Items marked CBuild="false" (the .NET-only native bindings) are left out: the C build uses the generated C flavor. Items marked
+    Feature="x" are in only if the game (a list of files) names that feature (see FEATURES); with no game, all of them are."""
     proj = os.path.join(PROWL, "Prowl.Core2D", "Prowl.Core2D.csproj")
     with open(proj, encoding="utf-8") as f:
         text = f.read()
+    used = None if game is None else features_used(game)
     files = []
     for m in re.finditer(r'<Compile\s+Include="([^"]+)"([^>]*)/>', text):
         if 'CBuild="false"' in m.group(2):
+            continue
+        feature = re.search(r'Feature="(\w+)"', m.group(2))
+        if feature and used is not None and feature.group(1) not in used:
             continue
         files.append(os.path.normpath(os.path.join(os.path.dirname(proj), m.group(1).replace("\\", os.sep))))
     return files
@@ -84,7 +109,7 @@ TIERS = [
     ("math", "engine-independent geometry, outlines and pose maths",
      [rt("Physics2D", f) for f in ("Pose2D.cs", "Collider2DGeometry.cs", "Collider2DOutline.cs")]),
     ("tables", "the integer core: handle table and active-trigger set (only indices)",
-     [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs")]),
+     [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs", "ContactSet.cs")]),
     ("registry", "the arena registry: bodies and joints as small records that point at each other",
      [rt("Physics2D", f) for f in ("MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs")]),
     ("core", "the simulation core: native world, step, pose writes, the event stream, queries (through the generated bindings)",
@@ -637,7 +662,7 @@ def print_report(report, args):
 CONFORMANCE = [
     ("math", "MathConformance", [rt("Physics2D", f) for f in ("Pose2D.cs", "Collider2DGeometry.cs", "Collider2DOutline.cs")],
      os.path.join(HERE, "conformance", "MathConformance.cs")),
-    ("handles", "HandleConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs")],
+    ("handles", "HandleConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs", "ContactSet.cs")],
      os.path.join(HERE, "conformance", "HandleConformance.cs")),
     ("registry", "RegistryConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs", "Pose2D.cs")],
      os.path.join(HERE, "conformance", "RegistryConformance.cs")),
@@ -651,10 +676,20 @@ CONFORMANCE = [
     # the draw batch a renderer is handed: layer order, a child of a rotated and scaled parent, a sprite on a falling body, recycling
     ("render-batch", "RenderBatchConformance", CORE2D_FILES(), os.path.join(HERE, "conformance", "RenderBatchConformance.cs"), True, False),
     # the simulation core, whole: native world, step, pose writes into the body arena, and the event stream, against the real library
-    ("sim", "SimConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs", "MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs", "Pose2D.cs", "SimCore2D.cs")],
+    ("sim", "SimConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs", "ContactSet.cs", "MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs", "Pose2D.cs", "SimCore2D.cs")],
      os.path.join(HERE, "conformance", "SimConformance.cs"), True),
+    # the contact events of a collider of several shapes (an edge collider, a terrain chunk): one Begin and one End per pair of colliders, not per pair of shapes
+    ("contacts", "ContactConformance", [rt("Physics2D", f) for f in ("HandleTable.cs", "TriggerSet.cs", "ContactSet.cs", "MaxInstancesAttribute.cs", "Arena.cs", "BodyRecord.cs", "JointRecord.cs", "Registry2D.cs", "Pose2D.cs", "SimCore2D.cs")],
+     os.path.join(HERE, "conformance", "ContactConformance.cs"), True),
     # `native` cases call the real Box2D shim through bindings generated from prowl_box2d.h (gen_pb2.py): on .NET through [LibraryImport], as
     # translated C linked against the same library. No program files: everything it needs is the generated bindings.
+    # the pure core of the pixel terrain (the run-length model, rectangles, outlines) and of the shattering (Voronoi, Delaunay), against bitmap and geometric oracles
+    ("pixel-terrain", "PixelTerrainConformance", [rt("Physics2D", "MaxInstancesAttribute.cs")] + [rt("Destruction2D", "PixelTerrain", f) for f in (
+        "PixelMath.cs", "PixelRange.cs", "PixelColumn.cs", "StampShape.cs", "PixelRect.cs", "PixelQuadTree.cs", "PixelRectMerge.cs", "PixelTerrainLimits.cs",
+        "PixelChunk.cs", "PixelChainTrace.cs")],
+     os.path.join(HERE, "conformance", "PixelTerrainConformance.cs")),
+    ("shatter", "ShatterConformance", [rt("Destruction2D", "Shatter", f) for f in ("PolySet.cs", "Fracturer.cs")],
+     os.path.join(HERE, "conformance", "ShatterConformance.cs")),
     ("native", "NativeConformance", [], os.path.join(HERE, "conformance", "NativeConformance.cs"), True),
 ]
 
@@ -681,6 +716,16 @@ def native_library_dir():
         if any(os.path.exists(os.path.join(rid_dir, n)) for n in ("libprowl_box2d.so", "libprowl_box2d.dylib", "prowl_box2d.dll")):
             return rid_dir
     return None
+
+
+def find_native_lib(name):
+    """A native library by file name: where `python3 build.py native` installed it (Libraries/<rid>/native), else in its build tree
+    (Build/Native/<rid>/<variant>, where the static libraries stay: libprowl_box2d_static.a, and libbox2d.a under box2d/src). None if there is none."""
+    for rid_dir in sorted(glob.glob(os.path.join(PROWL, "Libraries", "*", "native"))):
+        if os.path.exists(os.path.join(rid_dir, name)):
+            return os.path.join(rid_dir, name)
+    found = sorted(glob.glob(os.path.join(PROWL, "Build", "Native", "**", name), recursive=True), key=lambda p: ("avx2" in p, p))
+    return found[0] if found else None
 
 
 def cmd_conformance(args):

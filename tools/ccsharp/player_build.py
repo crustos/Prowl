@@ -101,8 +101,9 @@ def diagnostics(text):
     return out
 
 
-def translate(game, out_dir, main_class, gfx):
-    """Runs the translator over engine + game + generated sink; returns (path of the C file, list of diagnostics, raw output)."""
+def generate(game, out_dir, gfx):
+    """The generated inputs of a build: the bindings of each native library the game uses (both flavors), their headers in one folder, and the call sink
+    for the game's scripts. Returns the sink's path and the include folder."""
     gen_dir = os.path.join(out_dir, "generated")
     os.makedirs(gen_dir, exist_ok=True)
     # the bindings of each native library the game uses, both flavors, and their headers in ONE directory (the translator takes one)
@@ -119,11 +120,17 @@ def translate(game, out_dir, main_class, gfx):
     gen_pb2.use("box2d")
     sink = os.path.join(gen_dir, "Scripts.g.cs")
     gen_scripts.generate(sink, game)
+    return sink, include
+
+
+def translate(game, out_dir, main_class, gfx):
+    """Runs the translator over engine + game + generated sink; returns (path of the C file, list of diagnostics, raw output)."""
+    gen_dir = os.path.join(out_dir, "generated")
+    sink, nat_inc = generate(game, out_dir, gfx)
     ccs2c = os.path.join(scan.ccsharp_home(), "crust", "ccs2c.py")
-    nat_inc = include
     c_dir = os.path.join(out_dir, "c")
     shutil.rmtree(c_dir, ignore_errors=True)
-    cmd = ([sys.executable, ccs2c] + scan.CORE2D_FILES() + game + [sink]
+    cmd = ([sys.executable, ccs2c] + scan.CORE2D_FILES(game) + game + [sink]
            + ["--bindings=" + os.path.join(gen_dir, "bindings", "c"), "--include=" + nat_inc, "--main=" + main_class,
               "--name=player", "--convert=" + c_dir, "--c"])
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -174,9 +181,9 @@ def package(out_dir, c_file, native_dir, gfx):
         shutil.copy2(os.path.join(PROWL, "Native", "Gfx2D", "gfx2d.h"), os.path.join(out_dir, "gfx2d.h"))
     os.makedirs(os.path.join(out_dir, "lib"), exist_ok=True)
     for name in ("libprowl_box2d_static.a", "libbox2d.a") + (("libgfx2d_static.a",) if gfx else ()):
-        src = os.path.join(native_dir, name)
-        if not os.path.exists(src):
-            sys.exit("player_build: %s is missing (python3 build.py native builds it)" % src)
+        src = scan.find_native_lib(name)
+        if src is None:
+            sys.exit("player_build: %s is missing (python3 build.py native builds it)" % name)
         shutil.copy2(src, os.path.join(out_dir, "lib", name))
     with open(os.path.join(out_dir, "Makefile"), "w", newline="\n") as f:
         f.write(GFX_MAKEFILE if gfx else MAKEFILE)
@@ -201,11 +208,29 @@ def compile_player(out_dir, cc, static, gfx):
     return exe
 
 
+def sanitize_run(out_dir, cc, expected_stdout):
+    """Builds the translated C again with AddressSanitizer and UBSan and runs it. Returns None if clean, else what went wrong. (Leak detection is
+    off: an arena class lives until the process ends, by design, and LeakSanitizer discards buffered output.)"""
+    cmd = [cc, "-O1", "-g", "-w", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-I.", "-o", "player_asan", "player.c",
+           "-Llib", "-lprowl_box2d_static", "-lbox2d", "-lm"]
+    b = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
+    if b.returncode != 0:
+        return "the sanitizer build failed: " + b.stderr[-300:]
+    env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0", UBSAN_OPTIONS="print_stacktrace=1")
+    r = subprocess.run([os.path.join(out_dir, "player_asan")], cwd=out_dir, capture_output=True, text=True, env=env)
+    bad = [l for l in r.stderr.splitlines() if "ERROR: AddressSanitizer" in l or "runtime error" in l]
+    if bad:
+        return "%d report(s): %s" % (len(bad), bad[0][:200])
+    if r.stdout != expected_stdout:
+        return "output differs under the sanitizers"
+    return None
+
+
 def run_dotnet(game, out_dir, native_dir):
     """The same game on .NET (the reference), against the same native library."""
     gen_dir = os.path.join(out_dir, "generated")
     nets = [os.path.join(gen_dir, "bindings", "net", n) for n in sorted(os.listdir(os.path.join(gen_dir, "bindings", "net")))]
-    files = nets + scan.CORE2D_FILES() + game + [os.path.join(gen_dir, "Scripts.g.cs")]
+    files = nets + scan.CORE2D_FILES(game) + game + [os.path.join(gen_dir, "Scripts.g.cs")]
     work = os.path.join(out_dir, "dotnet-reference")
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
@@ -222,6 +247,8 @@ def main():
     ap.add_argument("--static", action="store_true", help="link a fully static executable")
     ap.add_argument("--cc", default=os.environ.get("CC") or "cc")
     ap.add_argument("--run", action="store_true", help="run the built player and show its output")
+    ap.add_argument("--sanitize", action="store_true", help="also run the translated C under AddressSanitizer and UBSan")
+    ap.add_argument("--dotnet", action="store_true", help="only run the game on .NET (the reference); no translation")
     a = ap.parse_args()
 
     game_dir = os.path.abspath(a.game)
@@ -244,6 +271,14 @@ def main():
         if a.static:
             print("note: a game that draws needs GL, which is loaded at run time: building dynamically (libc, libm, libEGL, libGLESv2), not statically")
             a.static = False
+    if a.dotnet:
+        generate(files, out_dir, gfx)
+        ref, err = run_dotnet(files, out_dir, native_dir)
+        if ref is None:
+            print(err)
+            return 1
+        print(ref)
+        return 0
     print("game      %s  (%d file%s, entry %s%s)" % (os.path.relpath(game_dir, PROWL), len(files), "" if len(files) == 1 else "s", main_class, ", draws" if gfx else ""))
     try:
         c_file, diags, raw = translate(files, out_dir, main_class, gfx)
@@ -277,6 +312,16 @@ def main():
     if native_out.returncode != 0:
         print("the player exited with %d" % native_out.returncode)
         rc = 1
+    if a.sanitize:
+        if gfx:
+            print("sanitize  skipped: a game that draws loads the system's GL, which is not run under the sanitizers")
+        else:
+            why = sanitize_run(out_dir, a.cc, native_out.stdout)
+            if why is None:
+                print("sanitize  ok: no AddressSanitizer or UBSan reports")
+            else:
+                print("sanitize  FAILED: " + why)
+                rc = 1
     if a.run:
         print("\n" + native_out.stdout)
     if a.verify:

@@ -262,8 +262,8 @@ class PhysicsSceneConformance
         Expect(ok, "D's collider on its child node sent its message to the child's script");
         ok = zoneBall.Enters == 2 && zoneBall.Exits == 2 && zoneBall.Stays > 0;
         Expect(ok, "the band heard of both balls, in and out");
-        ok = aBall.LastNY < -0.9f && aBall.LastImpulse > 0f;
-        Expect(ok, "the contact normal points from the ball down to the ground, with an impulse");
+        ok = aBall.LastNY > 0.9f && aBall.LastImpulse > 0f;
+        Expect(ok, "the contact normal points from the ground up to the ball (the other toward self), with an impulse");
         ok = Probe2.Bad == 0;
         Expect(ok, "every message reached a component of the collider's own node");
         ok = unsound == 0;

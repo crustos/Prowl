@@ -56,6 +56,11 @@ internal sealed class SimCore2D
     public Registry2D Registry;                  // what exists, and the arena records of bodies and joints
 
     private TriggerSet _active;                  // sensor/visitor pairs overlapping right now
+    private ContactSet _contacts;                // collider pairs touching right now, and how many pairs of their shapes do
+    private ContactSet _vanished;               // pairs whose shapes were destroyed with the collider kept (ShapesVanishing), until the next step settles them
+    private List<long> _synth;                   // pairs that stopped touching because their shapes were destroyed: Ends with no native contact behind them
+    private int _synthCursor;
+    private List<int> _due;                      // for each contact of the step: 1 if it is the one to tell the game about (see CountContacts)
     private PB2StepInfo _info;                   // the last step's events, in native memory until the next step
     private List<PB2TransformSet> _queued;       // teleports and kinematic moves, flushed in one native call at the start of the step
     private int _queuedCount;
@@ -94,6 +99,10 @@ internal sealed class SimCore2D
     {
         Registry = new Registry2D();
         _active = new TriggerSet();
+        _contacts = new ContactSet();
+        _due = new List<int>();
+        _vanished = new ContactSet();
+        _synth = new List<long>();
         _queued = new List<PB2TransformSet>();
         _matrix = new uint[32];
         for (int i = 0; i < 32; i++) _matrix[i] = 0xFFFFFFFFu;
@@ -120,8 +129,11 @@ internal sealed class SimCore2D
     public float GravityY => _gravityY;
     public int WorkerCount => _workers;
 
-    /// <summary>No live bodies or colliders, so the native world could be handed to someone else.</summary>
-    public bool IsIdle => !_inStep && Registry.BodyCount == 0 && Registry.ColliderCount == 0;
+    /// <summary>Holders of the native world that are not registered bodies or colliders (terrain layers): the world stays while any holds it.</summary>
+    public int Pins;
+
+    /// <summary>No live bodies or colliders, and nobody pinning the world, so the native world could be handed to someone else.</summary>
+    public bool IsIdle => !_inStep && Registry.BodyCount == 0 && Registry.ColliderCount == 0 && Pins == 0;
 
     public void SetGravity(float x, float y)
     {
@@ -162,6 +174,9 @@ internal sealed class SimCore2D
         if (!_hasWorld) return;
         Registry.Clear();
         _active.Clear();
+        _contacts.Clear();
+        _vanished.Clear();
+        _synth.Clear();
         _queuedCount = 0;
         _phase = 6;
         _secondKind = SimEvent.None;
@@ -211,11 +226,89 @@ internal sealed class SimCore2D
             if (record != null) record.Moved(m.x, m.y, m.c, m.s, m.fellAsleep != 0, _stepIndex);   // straight into the body's record
         }
 
+        _synth.Clear();
+        _synthCursor = 0;
+        CountContacts();
+
         _phase = 0;
         _cursor = 0;
         _phaseStarted = false;
         _secondKind = SimEvent.None;
         EventKind = SimEvent.None;
+    }
+
+    /// <summary>
+    /// The native layer reports a contact for every pair of SHAPES; the game is told about every pair of COLLIDERS, once. A collider can have many
+    /// shapes (an edge collider, a chunk of terrain), so this counts how many pairs of shapes touch each pair of colliders, and marks as due the
+    /// contact that makes the count 1 (the colliders began touching) and the one that makes it 0 (they stopped). The others are not told.
+    /// <para/>
+    /// The step's begins are counted BEFORE its ends, whatever order they are delivered in. A body that rolls from one shape of a collider onto the next
+    /// has the first shape's end and the second shape's begin in the same step; counting the end first would drop the count to 0 and tell the game it
+    /// stopped touching and touched again. The same goes for a collider whose shapes are rebuilt while something rests on it.
+    /// </summary>
+    private void CountContacts()
+    {
+        int total = _info.contactCount;
+        int begins = _info.contactBeginCount;
+        _due.Clear();
+        for (int i = 0; i < total; i++) _due.Add(0);
+        for (int i = 0; i < begins; i++)
+        {
+            PB2ContactEvent c = PB2.StepInfoContacts(ref _info, i);
+            if (!Registry.ColliderLive(c.colliderA) || !Registry.ColliderLive(c.colliderB)) continue;
+            long key = ContactSet.Pair(c.colliderA, c.colliderB);
+            bool continued = _vanished.Touching(key) > 0;               // its shapes were rebuilt: this is the same contact, not a new one
+            if (_contacts.Increment(key) == 1 && !continued) _due[i] = 1;
+        }
+        for (int i = begins; i < total; i++)
+        {
+            PB2ContactEvent c = PB2.StepInfoContacts(ref _info, i);
+            if (!Registry.ColliderLive(c.colliderA) || !Registry.ColliderLive(c.colliderB)) continue;
+            if (_contacts.Decrement(ContactSet.Pair(c.colliderA, c.colliderB)) == 0) _due[i] = 1;
+        }
+        // the pairs whose shapes were rebuilt: the new shapes' begins are in; a pair that touches none of them has ended, and no native event says so
+        for (int i = 0; i < _vanished.Count; i++)
+        {
+            long key = _vanished.KeyAt(i);
+            if (_contacts.Touching(key) == 0) _synth.Add(key);
+        }
+        _vanished.Clear();
+    }
+
+    /// <summary>
+    /// Call BEFORE destroying all the native shapes of a collider that stays registered and making them again (a terrain chunk after a dig). The
+    /// native layer reports no end for a destroyed shape, so the pairs this collider is touching would otherwise stay counted for ever and never end.
+    /// Here they are remembered instead: the new shapes' begins are taken for the same contact (no event), and after the step a pair that touches none
+    /// of them gets its End. Not for a collider that is going away (<see cref="ForgetCollider"/>), and not for rebuilding only some of its shapes.
+    /// </summary>
+    public void ShapesVanishing(int collider)
+    {
+        for (int i = _contacts.Count - 1; i >= 0; i--)
+        {
+            long key = _contacts.KeyAt(i);
+            if (ContactSet.Low(key) != collider && ContactSet.High(key) != collider) continue;
+            _contacts.Remove(key);
+            _vanished.Increment(key);
+        }
+    }
+
+    // the Ends of ShapesVanishing: one per pair, delivered after the native ones, in both directions
+    private bool NextSynthEnd()
+    {
+        while (_synthCursor < _synth.Count)
+        {
+            long key = _synth[_synthCursor];
+            _synthCursor++;
+            int a = ContactSet.Low(key);
+            int b = ContactSet.High(key);
+            if (!Registry.ColliderLive(a) || !Registry.ColliderLive(b)) continue;
+            Emit(SimEvent.CollisionEnd, a, b, 0f, 0f, 0f, 0f, 0f);
+            _secondKind = SimEvent.CollisionEnd;
+            _secondNX = 0f;
+            _secondNY = 0f;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Ends the step: slots freed during it become reusable. Safe to call whether or not the stream was read to its end.</summary>
@@ -289,8 +382,10 @@ internal sealed class SimCore2D
         int end = begins ? _info.contactBeginCount : _info.contactCount;
         while (first + _cursor < end)
         {
-            PB2ContactEvent c = PB2.StepInfoContacts(ref _info, first + _cursor);
+            int at = first + _cursor;
+            PB2ContactEvent c = PB2.StepInfoContacts(ref _info, at);
             _cursor++;
+            if (_due[at] == 0) continue;                       // another pair of shapes of the same two colliders is (still) touching
             if (!Registry.ColliderLive(c.colliderA) || !Registry.ColliderLive(c.colliderB)) continue;
             if (begins)
             {
@@ -308,7 +403,7 @@ internal sealed class SimCore2D
             }
             return true;
         }
-        return false;
+        return begins ? false : NextSynthEnd();
     }
 
     // A pair leaves: forgotten at once, and reported only if both colliders are still there to be told.
@@ -404,6 +499,8 @@ internal sealed class SimCore2D
     public void ForgetCollider(int collider)
     {
         if (_active.Count > 0) _active.RemoveInvolving(collider);
+        if (_contacts.Count > 0) _contacts.RemoveInvolving(collider);
+        if (_vanished.Count > 0) _vanished.RemoveInvolving(collider);
     }
 
     // ---- queries -------------------------------------------------------------------------

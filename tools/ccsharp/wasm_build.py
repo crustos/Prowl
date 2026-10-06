@@ -103,3 +103,49 @@ def link_player(out_dir, name="prowl2d-player"):
     launcher = os.path.join(out_dir, name)
     c._wasm_package(launcher, name, c.dna_home(), False)
     return launcher, module
+
+
+def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player"):
+    """A game with managed classes (--dna): the translated C, the glue that calls DotNetAnywhere, the DotNetAnywhere runtime (with the native functions
+    the managed code may call in its FFI table), and Box2D, into out_dir/NAME (a native executable) or out_dir/NAME.wasm with its launcher. The managed
+    assembly (player.managed.dll, the name the glue looks for beside the executable) and corlib.dll are copied beside it. Returns the executable
+    (or the launcher)."""
+    c = _ccs2c()
+    home, bdir = c.dna_prepare(wasm)
+    manifest = os.path.join(c_dir, "player.ffi.json")
+    flag = ["--wasm"] if wasm else []
+    if os.path.exists(manifest):
+        c.dna_run(flag + ["--ffi", manifest, "--lib-only", "--no-corlib"], home, bdir)
+        lib = os.path.join(bdir, "libdna_ffi_wasm.a" if wasm else "libdna_ffi.a")
+    else:
+        lib = os.path.join(bdir, "libdna_wasm.a" if wasm else "libdna.a")
+    for f in ("player.c", "player.bridge.c", "player.managed.dll", "player.ffi.json"):
+        if os.path.exists(os.path.join(c_dir, f)):
+            shutil.copy2(os.path.join(c_dir, f), os.path.join(out_dir, f))
+    shutil.copy2(os.path.join(bdir, "corlib.dll"), out_dir)
+    srcs = ["player.c", "player.bridge.c"]
+    inc = ["-I.", "-I" + os.path.join(home, "native", "src")]
+    if wasm:
+        natives = build_natives()
+        module = os.path.join(out_dir, name + ".wasm")
+        cmd = [c.wasm_compiler(cc)] + _cflags(c) + inc + ["-o", module] + srcs + [lib, "-L" + natives, "-lprowl_box2d_static", "-lbox2d", "-lm"] + c._WASM_LDFLAGS
+        exe = os.path.join(out_dir, name)
+    else:
+        sys.path.insert(0, HERE)
+        import ccsharp_scan as scan
+        libs = []
+        for n in ("libprowl_box2d_static.a", "libbox2d.a"):
+            p = scan.find_native_lib(n)
+            if p is None:
+                sys.exit("player_build: %s is missing (python3 build.py native builds it)" % n)
+            libs.append(p)
+        exe = os.path.join(out_dir, name)
+        cmd = [cc or "cc", "-O2", "-ffp-contract=off", "-w"] + inc + ["-o", exe] + srcs + [lib] + libs + ["-lm", "-lpthread"]
+    r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
+    if r.returncode != 0:
+        errs = [l for l in (r.stdout + r.stderr).splitlines() if "error" in l or "undefined" in l]
+        print("player_build: the C compiler rejected the hybrid build:\n   " + "\n   ".join(e[:220] for e in errs[:10]))
+        sys.exit(1)
+    if wasm:
+        c._wasm_package(exe, "player", home, True)
+    return exe

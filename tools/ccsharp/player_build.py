@@ -17,6 +17,9 @@ Prowl.Core2D (its file list is Prowl.Core2D/Prowl.Core2D.csproj). What this does
              editors already read), exiting 1 if there is anything. This is what an editor's "C build" mode runs on a script as it is saved.
   --verify   also run the same game on .NET (the reference) and require both to print the same thing.
   --static   link a fully static executable (no loader, no libc.so): `ldd` then says "not a dynamic executable".
+  --dna      what the subset cannot hold (lambdas, try/catch, generics ...) is built as managed C#, run by DotNetAnywhere linked into the player; the
+             rest stays native C. The classes that use it follow it (the call sink, Main). A `// dna` line in a game file makes --dna the default.
+             Output: the player (or player.wasm with --wasm) with player.managed.dll and corlib.dll beside it.
   --wasm     build for WebAssembly (wasm32-wasi) instead: OUT/prowl2d-player.wasm, a launcher OUT/prowl2d-player that runs it under node, and
              run_wasm.mjs (the host, from DotNetAnywhere). Box2D and the shim are compiled for wasm32 first (Build/Native/wasm32). With
              --verify the output is also compared with the .NET run. A game that draws is not supported yet (the renderer is EGL/GLES).
@@ -46,6 +49,10 @@ def uses_gfx(files):
         if re.search(r"Prowl\.Native\.Gfx2D|\bGFX\.", text):
             return True
     return False
+
+
+def gfx_hint(files):
+    return uses_gfx(files)
 
 
 def check_constants():
@@ -126,7 +133,7 @@ def generate(game, out_dir, gfx):
     return sink, include
 
 
-def translate(game, out_dir, main_class, gfx):
+def translate(game, out_dir, main_class, gfx, dna=False):
     """Runs the translator over engine + game + generated sink; returns (path of the C file, list of diagnostics, raw output)."""
     gen_dir = os.path.join(out_dir, "generated")
     sink, nat_inc = generate(game, out_dir, gfx)
@@ -135,7 +142,7 @@ def translate(game, out_dir, main_class, gfx):
     shutil.rmtree(c_dir, ignore_errors=True)
     cmd = ([sys.executable, ccs2c] + scan.CORE2D_FILES(game) + game + [sink]
            + ["--bindings=" + os.path.join(gen_dir, "bindings", "c"), "--include=" + nat_inc, "--main=" + main_class,
-              "--name=player", "--convert=" + c_dir, "--c"])
+              "--name=player", "--convert=" + c_dir, "--c"] + (["--dna"] if dna else []))
     r = subprocess.run(cmd, capture_output=True, text=True)
     raw = r.stdout + r.stderr
     c_file = os.path.join(c_dir, "player.c")
@@ -248,6 +255,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="only translate: print what is outside the C# subset, exit 1 if anything is")
     ap.add_argument("--verify", action="store_true", help="also run the game on .NET and require the same output")
     ap.add_argument("--static", action="store_true", help="link a fully static executable")
+    ap.add_argument("--dna", action="store_true", help="classes outside the C# subset (lambdas, try/catch ...) run managed, on DotNetAnywhere linked into the player")
     ap.add_argument("--wasm", action="store_true", help="build for WebAssembly (wasm32-wasi), run under node")
     ap.add_argument("--cc", default=os.environ.get("CC") or "cc")
     ap.add_argument("--run", action="store_true", help="run the built player and show its output")
@@ -273,9 +281,13 @@ def main():
             sys.exit("player_build: --wasm: " + why)
         if a.static or a.sanitize:
             sys.exit("player_build: --static and --sanitize are for the native player; --wasm builds a wasm module")
+    if a.dna and (a.static or a.sanitize or gfx_hint(files)):
+        sys.exit("player_build: --dna is not combined with --static, --sanitize or a game that draws (yet)")
     if native_dir is None and not (a.wasm and not a.verify):
         sys.exit("player_build: the native library is not built (python3 build.py native)")
 
+    if not a.dna and any(re.search(r"^//\s*dna\s*$", open(f, encoding="utf-8-sig").read(2000), re.M) for f in files):
+        a.dna = True                          # a game that says so (a `// dna` line in a file) is always built with --dna
     gfx = uses_gfx(files)
     if gfx and a.wasm:
         sys.exit("player_build: --wasm: a game that draws needs the renderer (EGL/GLES), which has no WebAssembly build yet")
@@ -294,7 +306,7 @@ def main():
         return 0
     print("game      %s  (%d file%s, entry %s%s)" % (os.path.relpath(game_dir, PROWL), len(files), "" if len(files) == 1 else "s", main_class, ", draws" if gfx else ""))
     try:
-        c_file, diags, raw = translate(files, out_dir, main_class, gfx)
+        c_file, diags, raw = translate(files, out_dir, main_class, gfx, a.dna)
     except gen_scripts.GenError as e:
         print("%s: error CCS0002: %s" % (game_dir, e))
         return 1
@@ -302,6 +314,8 @@ def main():
         if diags:
             print("\n".join(diags))
             print("\n%d construct(s) outside the C# subset: the C build cannot translate this game." % len(diags))
+            if not a.dna:
+                print("hint: --dna builds those classes as managed code, run by DotNetAnywhere inside the player (a `// dna` line in a game file makes it the default).")
             if any(re.search(r"error CS(0246|0234|0103|0117|1061|1501|0305)", d) for d in diags):
                 print("note: a 'could not be found' / 'does not contain a definition' error may be a typo, or a .NET API that the C build's library does not\n"
                       "      have (there is no LINQ, for one): see tools/ccsharp/README.md, 'Subset limits'.")
@@ -313,7 +327,13 @@ def main():
         print("ok: the game is inside the C# subset")
         return 0
 
-    if a.wasm:
+    hybrid = a.dna and os.path.exists(os.path.join(os.path.dirname(c_file), "player.bridge.c"))
+    if hybrid:
+        import wasm_build
+        shutil.copy2(os.path.join(PROWL, "Native", "Box2D", "prowl_box2d.h"), os.path.join(out_dir, "prowl_box2d.h"))
+        exe = wasm_build.link_hybrid(out_dir, os.path.dirname(c_file), a.wasm, a.cc if a.cc != "cc" else None)
+        print("built       %s  (hybrid: native C + managed on DotNetAnywhere%s)" % (os.path.relpath(exe, PROWL), ", wasm32" if a.wasm else ""))
+    elif a.wasm:
         shutil.copy2(c_file, os.path.join(out_dir, "player.c"))
         shutil.copy2(os.path.join(PROWL, "Native", "Box2D", "prowl_box2d.h"), os.path.join(out_dir, "prowl_box2d.h"))
         exe, module = wasm_build.link_player(out_dir)

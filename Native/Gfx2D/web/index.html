@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prowl2D</title>
+<style>
+  body { margin: 0; background: #101418; color: #cfd6df; font: 14px/1.4 system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; }
+  canvas { margin-top: 16px; max-width: 100%; background: #000; image-rendering: pixelated; }
+  pre { width: min(92vw, 640px); max-height: 30vh; overflow: auto; margin: 12px 0 24px; padding: 8px 12px; background: #181e25; border-radius: 6px; white-space: pre-wrap; }
+</style>
+<canvas id="screen" width="640" height="360"></canvas>
+<pre id="log"></pre>
+<script type="module">
+  import { startProwl } from "./prowl_web.js";
+  const out = document.getElementById("log");
+  const log = (s) => { out.textContent += s + "\n"; out.scrollTop = out.scrollHeight; };
+  const manual = new URLSearchParams(location.search).has("manual");
+  window.prowl = await startProwl({ wasm: "prowl2d-player.wasm", canvas: document.getElementById("screen"), log, manual });
+  window.prowlReady = true;
+</script>

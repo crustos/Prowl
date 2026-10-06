@@ -17,6 +17,9 @@ Prowl.Core2D (its file list is Prowl.Core2D/Prowl.Core2D.csproj). What this does
              editors already read), exiting 1 if there is anything. This is what an editor's "C build" mode runs on a script as it is saved.
   --verify   also run the same game on .NET (the reference) and require both to print the same thing.
   --static   link a fully static executable (no loader, no libc.so): `ldd` then says "not a dynamic executable".
+  --wasm     build for WebAssembly (wasm32-wasi) instead: OUT/prowl2d-player.wasm, a launcher OUT/prowl2d-player that runs it under node, and
+             run_wasm.mjs (the host, from DotNetAnywhere). Box2D and the shim are compiled for wasm32 first (Build/Native/wasm32). With
+             --verify the output is also compared with the .NET run. A game that draws is not supported yet (the renderer is EGL/GLES).
 """
 import argparse
 import glob
@@ -245,6 +248,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="only translate: print what is outside the C# subset, exit 1 if anything is")
     ap.add_argument("--verify", action="store_true", help="also run the game on .NET and require the same output")
     ap.add_argument("--static", action="store_true", help="link a fully static executable")
+    ap.add_argument("--wasm", action="store_true", help="build for WebAssembly (wasm32-wasi), run under node")
     ap.add_argument("--cc", default=os.environ.get("CC") or "cc")
     ap.add_argument("--run", action="store_true", help="run the built player and show its output")
     ap.add_argument("--sanitize", action="store_true", help="also run the translated C under AddressSanitizer and UBSan")
@@ -259,13 +263,22 @@ def main():
     if not main_class:
         sys.exit("player_build: no class with a static Main in %s" % game_dir)
     name = os.path.basename(game_dir.rstrip(os.sep))
-    out_dir = os.path.abspath(a.out or os.path.join(PROWL, "Build", "Player", name))
+    out_dir = os.path.abspath(a.out or os.path.join(PROWL, "Build", "Player", name + ("-wasm" if a.wasm else "")))
     os.makedirs(out_dir, exist_ok=True)
     native_dir = scan.native_library_dir()
-    if native_dir is None:
+    if a.wasm:
+        import wasm_build
+        ok, why = wasm_build.available()
+        if not ok:
+            sys.exit("player_build: --wasm: " + why)
+        if a.static or a.sanitize:
+            sys.exit("player_build: --static and --sanitize are for the native player; --wasm builds a wasm module")
+    if native_dir is None and not (a.wasm and not a.verify):
         sys.exit("player_build: the native library is not built (python3 build.py native)")
 
     gfx = uses_gfx(files)
+    if gfx and a.wasm:
+        sys.exit("player_build: --wasm: a game that draws needs the renderer (EGL/GLES), which has no WebAssembly build yet")
     if gfx:
         check_constants()
         if a.static:
@@ -300,15 +313,22 @@ def main():
         print("ok: the game is inside the C# subset")
         return 0
 
-    package(out_dir, c_file, native_dir, gfx)
-    exe = compile_player(out_dir, a.cc, a.static, gfx)
-    print("built       %s  (%d KiB)" % (os.path.relpath(exe, PROWL), os.path.getsize(exe) // 1024))
-    print("package     %s  (rebuild with only a C compiler: `make` or ./build.sh in it)" % os.path.relpath(out_dir, PROWL))
+    if a.wasm:
+        shutil.copy2(c_file, os.path.join(out_dir, "player.c"))
+        shutil.copy2(os.path.join(PROWL, "Native", "Box2D", "prowl_box2d.h"), os.path.join(out_dir, "prowl_box2d.h"))
+        exe, module = wasm_build.link_player(out_dir)
+        print("built       %s  (%d KiB; run it with %s, which needs node 20+)" % (os.path.relpath(module, PROWL), os.path.getsize(module) // 1024,
+                                                                                os.path.relpath(exe, PROWL)))
+    else:
+        package(out_dir, c_file, native_dir, gfx)
+        exe = compile_player(out_dir, a.cc, a.static, gfx)
+        print("built       %s  (%d KiB)" % (os.path.relpath(exe, PROWL), os.path.getsize(exe) // 1024))
+        print("package     %s  (rebuild with only a C compiler: `make` or ./build.sh in it)" % os.path.relpath(out_dir, PROWL))
 
     rc = 0
     for old in glob.glob(os.path.join(out_dir, "frame_*.ppm")):
         os.remove(old)
-    native_out = subprocess.run([exe], capture_output=True, text=True, cwd=out_dir)
+    native_out = subprocess.run([exe], capture_output=True, text=True, cwd=out_dir)   # (for --wasm: the launcher, so the wasm module's output)
     if native_out.returncode != 0:
         print("the player exited with %d" % native_out.returncode)
         rc = 1
@@ -330,7 +350,7 @@ def main():
             print("verify    FAILED to run the .NET reference: %s" % err)
             return 1
         if ref == native_out.stdout:
-            print("verify    ok: the native player and the .NET run print identical output (%d lines)" % len(ref.splitlines()))
+            print("verify    ok: the %s and the .NET run print identical output (%d lines)" % ("wasm module" if a.wasm else "native player", len(ref.splitlines())))
         else:
             x, y = ref.splitlines(), native_out.stdout.splitlines()
             first = next((i for i in range(max(len(x), len(y))) if i >= len(x) or i >= len(y) or x[i] != y[i]), 0)

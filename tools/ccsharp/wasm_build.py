@@ -149,3 +149,44 @@ def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player"):
     if wasm:
         c._wasm_package(exe, "player", home, True)
     return exe
+
+
+WEB_ENTRY = """
+/* the page's entry points (player_build --web): the game's Init() once, then Frame() once per 1/60 s */
+__attribute__((export_name("prowl_init"))) int prowl_init(void) { return %(c)s_Init(); }
+__attribute__((export_name("prowl_frame"))) void prowl_frame(void) { %(c)s_Frame(); }
+"""
+
+
+def link_web(out_dir, c_file, main_class, name="prowl2d-player"):
+    """The player as a WASI reactor for a page: out_dir/NAME.wasm, with the page (index.html), its host script (prowl_web.js) beside it. The module exports
+    prowl_init / prowl_frame (the game's `static int Init()` and `static void Frame()`) and imports the "gfx" functions of Native/Gfx2D/gfx2d_web.c, which
+    web/prowl_gfx... prowl_web.js implements with WebGL2. Returns the module's path."""
+    import re
+    c = _ccs2c()
+    natives = build_natives()
+    cname = main_class.replace(".", "_")
+    with open(c_file, encoding="utf-8") as f:
+        text = f.read()
+    for sig in ("static int %s_Init(void)" % cname, "static void %s_Frame(void)" % cname):
+        if sig not in text:
+            sys.exit("player_build: --web needs the game's class %s to have `public static int Init()` and `public static void Frame()` (the page calls them: Init once, "
+                     "Frame once per 1/60 s); %r is not in the translated C. See Samples/Draw2D." % (main_class, sig))
+    web_c = os.path.join(out_dir, "player.web.c")
+    with open(web_c, "w", encoding="utf-8") as f:
+        f.write(text + WEB_ENTRY % {"c": cname})
+    gfx_dir = os.path.join(PROWL, "Native", "Gfx2D")
+    module = os.path.join(out_dir, name + ".wasm")
+    if os.path.exists(module):
+        os.remove(module)
+    cmd = ([c.wasm_compiler()] + _cflags(c) + ["-I.", "-I" + gfx_dir, "-I" + os.path.join(PROWL, "Native", "Box2D"), "-mexec-model=reactor", "-o", module, web_c, os.path.join(gfx_dir, "gfx2d_web.c"),
+           "-L" + natives, "-lprowl_box2d_static", "-lbox2d", "-lm"] + ["-fuse-ld=lld", "-Wl,-z,stack-size=8388608", "-Wl,--export=prowl_init", "-Wl,--export=prowl_frame"])
+    r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
+    if r.returncode != 0:
+        errs = [l for l in r.stderr.splitlines() if "error" in l or "undefined" in l]
+        print("player_build: clang (wasm32) rejected the web build:\n   " + "\n   ".join(e[:220] for e in errs[:8]))
+        sys.exit(1)
+    os.remove(web_c)
+    for f in ("index.html", "prowl_web.js"):
+        shutil.copy2(os.path.join(gfx_dir, "web", f), os.path.join(out_dir, f))
+    return module

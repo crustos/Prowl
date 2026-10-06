@@ -20,6 +20,9 @@ Prowl.Core2D (its file list is Prowl.Core2D/Prowl.Core2D.csproj). What this does
   --dna      what the subset cannot hold (lambdas, try/catch, generics ...) is built as managed C#, run by DotNetAnywhere linked into the player; the
              rest stays native C. The classes that use it follow it (the call sink, Main). A `// dna` line in a game file makes --dna the default.
              Output: the player (or player.wasm with --wasm) with player.managed.dll and corlib.dll beside it.
+  --web      a page that runs the game in a browser: OUT/index.html, prowl_web.js and prowl2d-player.wasm (a WASI reactor; WebGL2 draws the sprite batch). The
+             game's class with Main also has `public static int Init()` and `public static void Frame()`: the page calls Init once, then Frame once per 1/60 s.
+             Implies --wasm. Serve OUT over http. See Samples/Draw2D.
   --wasm     build for WebAssembly (wasm32-wasi) instead: OUT/prowl2d-player.wasm, a launcher OUT/prowl2d-player that runs it under node, and
              run_wasm.mjs (the host, from DotNetAnywhere). Box2D and the shim are compiled for wasm32 first (Build/Native/wasm32). With
              --verify the output is also compared with the .NET run. A game that draws is not supported yet (the renderer is EGL/GLES).
@@ -256,6 +259,7 @@ def main():
     ap.add_argument("--verify", action="store_true", help="also run the game on .NET and require the same output")
     ap.add_argument("--static", action="store_true", help="link a fully static executable")
     ap.add_argument("--dna", action="store_true", help="classes outside the C# subset (lambdas, try/catch ...) run managed, on DotNetAnywhere linked into the player")
+    ap.add_argument("--web", action="store_true", help="a page (index.html + wasm + JS) that runs the game in a browser; the game has `static int Init()` and `static void Frame()`. Implies --wasm")
     ap.add_argument("--wasm", action="store_true", help="build for WebAssembly (wasm32-wasi), run under node")
     ap.add_argument("--cc", default=os.environ.get("CC") or "cc")
     ap.add_argument("--run", action="store_true", help="run the built player and show its output")
@@ -263,6 +267,8 @@ def main():
     ap.add_argument("--dotnet", action="store_true", help="only run the game on .NET (the reference); no translation")
     a = ap.parse_args()
 
+    if a.web:
+        a.wasm = True
     game_dir = os.path.abspath(a.game)
     files = game_files(game_dir)
     if not files:
@@ -271,7 +277,7 @@ def main():
     if not main_class:
         sys.exit("player_build: no class with a static Main in %s" % game_dir)
     name = os.path.basename(game_dir.rstrip(os.sep))
-    out_dir = os.path.abspath(a.out or os.path.join(PROWL, "Build", "Player", name + ("-wasm" if a.wasm else "")))
+    out_dir = os.path.abspath(a.out or os.path.join(PROWL, "Build", "Player", name + ("-web" if a.web else "-wasm" if a.wasm else "")))
     os.makedirs(out_dir, exist_ok=True)
     native_dir = scan.native_library_dir()
     if a.wasm:
@@ -289,8 +295,10 @@ def main():
     if not a.dna and any(re.search(r"^//\s*dna\s*$", open(f, encoding="utf-8-sig").read(2000), re.M) for f in files):
         a.dna = True                          # a game that says so (a `// dna` line in a file) is always built with --dna
     gfx = uses_gfx(files)
-    if gfx and a.wasm:
-        sys.exit("player_build: --wasm: a game that draws needs the renderer (EGL/GLES), which has no WebAssembly build yet")
+    if gfx and a.wasm and not a.web:
+        sys.exit("player_build: --wasm: a game that draws needs a renderer: --web builds it for a page (WebGL2); under node there is no GL")
+    if a.web and a.dna:
+        sys.exit("player_build: --web is not combined with --dna yet")
     if gfx:
         check_constants()
         if a.static:
@@ -333,6 +341,11 @@ def main():
         shutil.copy2(os.path.join(PROWL, "Native", "Box2D", "prowl_box2d.h"), os.path.join(out_dir, "prowl_box2d.h"))
         exe = wasm_build.link_hybrid(out_dir, os.path.dirname(c_file), a.wasm, a.cc if a.cc != "cc" else None)
         print("built       %s  (hybrid: native C + managed on DotNetAnywhere%s)" % (os.path.relpath(exe, PROWL), ", wasm32" if a.wasm else ""))
+    elif a.web:
+        module = wasm_build.link_web(out_dir, c_file, main_class)
+        print("built       %s  (%d KiB); a page: serve %s over http (python3 -m http.server) and open index.html" % (os.path.relpath(module, PROWL),
+              os.path.getsize(module) // 1024, os.path.relpath(out_dir, PROWL)))
+        return 0
     elif a.wasm:
         shutil.copy2(c_file, os.path.join(out_dir, "player.c"))
         shutil.copy2(os.path.join(PROWL, "Native", "Box2D", "prowl_box2d.h"), os.path.join(out_dir, "prowl_box2d.h"))

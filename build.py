@@ -18,7 +18,7 @@ Commands (the default, with none, is `all`):
               add --wasm for a WebAssembly (wasm32-wasi) module run under node; --dna to let classes outside the C# subset run on DotNetAnywhere
               (GAME is a folder of .cs files with a static Main; tools/ccsharp/player_build.py has the details)
     gfx       build the 2D renderer (Native/Gfx2D) for this machine: needs the EGL/GLES headers and ../crust
-    webtest   Samples/Draw2D as a native player and as a web page (WebGL2) run in headless Chromium, and compare the two pictures
+    webtest   Samples/Draw2D as a native player and as a web page (WebGL2 and WebGPU) run in headless Chromium, and compare the two pictures
     samples   every folder of Samples/ (or the named ones), built as a player and compared with the same game on .NET: samples [NAME..] [--sanitize] [--wasm]
     check3d   does the 3D switch still hold? compiles with and without 3D and compares   (tools/check_physics3d.py)
     status    what was found where
@@ -243,8 +243,17 @@ def cmd_webtest(a):
         say("web test: " + n)
         run([sys.executable, PLAYER_BUILD, os.path.join("Samples", n), "--run"], cwd=ROOT)
         run([sys.executable, PLAYER_BUILD, os.path.join("Samples", n), "--web"], cwd=ROOT)
-        run(["node", os.path.join(ROOT, "tools", "web_test.mjs"), os.path.join(ROOT, "Build", "Player", n + "-web"),
-             "--ref", os.path.join(ROOT, "Build", "Player", n, "frame_0000.ppm")], cwd=ROOT)
+        for g in ("webgl2", "webgpu"):                      # the same page, drawn by each API, must give the native picture
+            cmd = ["node", os.path.join(ROOT, "tools", "web_test.mjs"), os.path.join(ROOT, "Build", "Player", n + "-web"),
+                   "--ref", os.path.join(ROOT, "Build", "Player", n, "frame_0000.ppm"), "--gfx", g]
+            if g == "webgpu":                               # a headed browser (the canvas must present) on a Vulkan device: xvfb-run and lavapipe where there is no screen
+                if not os.environ.get("DISPLAY"):
+                    if not shutil.which("xvfb-run"):
+                        say("web test: " + n + " with webgpu skipped (needs a display: install xvfb, and mesa-vulkan-drivers for a software Vulkan device)")
+                        continue
+                    cmd = ["xvfb-run", "-a"] + cmd
+            say("web test: " + n + " with " + g)
+            run(cmd, cwd=ROOT)
 
 
 PLAYER_BUILD = os.path.join(ROOT, "tools", "ccsharp", "player_build.py")

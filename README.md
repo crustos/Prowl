@@ -367,14 +367,23 @@ and open it). The module is a WASI reactor: the page loads it, supplies a small 
 same atlas and the same conversion of the batch as the desktop renderer, shared in `gfx2d_common.h`) and `Native/Gfx2D/web/prowl_web.js` does the GL, one instanced draw call over the same
 24-byte sprites. (Crust's own batch renderer is OpenGL ES 3.1, which WebGL2 is not, so the page has its own small shader: the sprite path of it, without lights or effects, which
 `gfx2d` does not use either.) `python3 build.py webtest` builds `Samples/Draw2D` both ways, runs the page in headless Chromium (SwiftShader), steps 240 frames and compares the canvas with the native frame:
-the largest difference is one level of 255 (two software rasterisers rounding differently). No input, audio or window sizing yet: the canvas is fixed at the size the game asks `GFX.Init` for.
+the largest difference is one level of 255 (two software rasterisers rounding differently).
+
+**WebGPU.** The same page draws with WebGPU where the browser has it and with WebGL2 where it does not (`?gfx=webgpu` or `?gfx=webgl2` in the URL, or `startProwl({ gfx })`, force one; the default `auto` prefers
+WebGPU and falls back, and `window.prowl.backend` says which one ran). The WebGPU path in `prowl_web.js` is the WebGL2 one ported: the 24-byte sprites are the instance buffer of one `draw(4, n)` (a
+four-vertex strip, `float16x2`/`uint16x2`/`unorm8x4` attributes), the shader is WGSL, the blend is the same SRC_ALPHA / ONE_MINUS_SRC_ALPHA, and the picture is drawn into an offscreen texture that a
+fullscreen pass then puts on the canvas (so it can be read back whenever). One difference follows from the API: WebGPU cannot read pixels synchronously, so `GFX.Pixel` / `GFX.FrameHash` in a game on
+WebGPU return the newest picture that has arrived from the GPU (a frame or more behind, black until the first), where WebGL2 gives the exact one. The exact picture is `await window.prowl.readPixels()`
+(RGBA, rows bottom to top, with either API), which the test uses. `webtest` runs each sample with both APIs: WebGPU needs a Vulkan device and a window, so on a machine with no screen it runs under `xvfb-run`
+with a software Vulkan driver (`apt install xvfb mesa-vulkan-drivers`) and is skipped without them. Against the native frame WebGPU differs in 0.018% of the pixels by more than 8 levels (texel edges of the
+rotated discs, where two rasterisers pick different neighbours), WebGL2 in none. No input, audio or window sizing yet: the canvas is fixed at the size the game asks `GFX.Init` for.
 
 **The web with managed scripts: `--web --dna`.** The same page can run a hybrid game (`Samples/DrawScript2D`: Draw2D with a lambda and a `try`/`catch` in a script, `// dna` in the file): the wasm module has
 DotNetAnywhere linked in, the page fetches `player.managed.dll` and `corlib.dll` and gives the module a small read-only file system of them (the WASI shim in `prowl_web.js`), and the page's
 `Init`/`Frame` are called through the runtime where the game class is managed (directly where it stayed native). The page also provides `dna.emit_wasm`, so DotNetAnywhere's wasm JIT works there; Chrome compiles
 only small modules on the main thread, so a larger method is refused and stays interpreted. Native code can hold the managed scripts but cannot take one returned by a managed method, so a game that is
 native (`[Native]`, with a marker class of its own, as in the sample) adds scripts with `Scripts.AttachName(node)`, which returns nothing, instead of `Scripts.AddName(node)`.
-`python3 build.py webtest` runs both samples, and the picture of each page matches the native one.
+`python3 build.py webtest` runs both samples with both APIs, and the picture of each page matches the native one.
 
 **What it does not have yet:** a native window (the web page presents), the renderer's lights and sprite effects (it has them; no component feeds them), scene files (a game builds its scene in code), input, audio, joints,
 and anything but Linux x86-64 (the native archives are built for the machine they are built on).

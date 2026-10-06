@@ -15,7 +15,7 @@ Commands (the default, with none, is `all`):
     scan      how much of the 2D engine can CCSharp translate to C?   (tools/ccsharp/ccsharp_scan.py; args after -- go to it)
     ccsharp   translate-and-run conformance: the 2D math as C, built with gcc, compared with real .NET
     player    translate a game to C and build a native player with no .NET in it:  player GAME [--verify] [--static] [--run] [--sanitize] [--dotnet]
-              add --wasm for a WebAssembly (wasm32-wasi) module run under node
+              add --wasm for a WebAssembly (wasm32-wasi) module run under node; --dna to let classes outside the C# subset run on DotNetAnywhere
               (GAME is a folder of .cs files with a static Main; tools/ccsharp/player_build.py has the details)
     samples   every folder of Samples/ (or the named ones), built as a player and compared with the same game on .NET: samples [NAME..] [--sanitize] [--wasm]
     check3d   does the 3D switch still hold? compiles with and without 3D and compares   (tools/check_physics3d.py)
@@ -210,7 +210,7 @@ PLAYER_BUILD = os.path.join(ROOT, "tools", "ccsharp", "player_build.py")
 
 
 def player_flags(a):
-    return [f for f, on in (("--verify", a.verify), ("--static", a.static), ("--run", a.run), ("--sanitize", a.sanitize), ("--dotnet", a.dotnet), ("--wasm", a.wasm)) if on]
+    return [f for f, on in (("--verify", a.verify), ("--static", a.static), ("--run", a.run), ("--sanitize", a.sanitize), ("--dotnet", a.dotnet), ("--wasm", a.wasm), ("--dna", a.dna)) if on]
 
 
 def cmd_player(a):
@@ -298,6 +298,7 @@ def main():
     ap.add_argument("--run", action="store_true", help="player: run the built player and show its output")
     ap.add_argument("--sanitize", action="store_true", help="player / samples: also run the translated C under AddressSanitizer and UBSan")
     ap.add_argument("--dotnet", action="store_true", help="player: only run the game on .NET (the reference)")
+    ap.add_argument("--dna", action="store_true", help="player: classes outside the C# subset (lambdas, try/catch) run managed on DotNetAnywhere, in the same executable")
     ap.add_argument("--wasm", action="store_true", help="player: build for WebAssembly (wasm32-wasi) and run it under node")
     ap.add_argument("--3d", dest="three_d", action="store_true", help="also compile the unmaintained 3D physics (default: 2D only)")
     ap.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"], help="build configuration (default Release)")

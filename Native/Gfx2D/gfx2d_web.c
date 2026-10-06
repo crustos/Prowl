@@ -1,9 +1,10 @@
-/* gfx2d_web: gfx2d.h for WebAssembly in a browser. The batch is converted exactly as the desktop renderer's (gfx2d_common.h); drawing is WebGL2, done by
- * web/prowl_gfx.js, which the page gives the module as the "gfx" import namespace:
+/* gfx2d_web: gfx2d.h for WebAssembly in a browser. The batch is converted exactly as the desktop renderer's (gfx2d_common.h); drawing is WebGPU or WebGL2, done by
+ * web/prowl_web.js, which the page gives the module as the "gfx" import namespace:
  *
  *     int  gfx_web_init(int w, int h, const unsigned char *atlas_rgba, int side, const unsigned short *rects, int sprites)   1, or 0 without WebGL2
  *     void gfx_web_draw(const void *sprites, int n, float left, float bottom, float right, float top, float r, float g, float b)
- *     void gfx_web_read(unsigned char *rgba)         the canvas as it was just drawn, RGBA, rows bottom to top (what glReadPixels gives)
+ *     void gfx_web_read(unsigned char *rgba)         the canvas as it was just drawn, RGBA, rows bottom to top (what glReadPixels gives); on WebGPU, which cannot
+ *                                                    read synchronously, the newest picture that has come back from the GPU
  *     void gfx_web_shutdown(void)
  *
  * No file system on the page, so gfx_save_frame writes nothing (it returns 0). The pixels are read back only when something asks for them (gfx_pixel,

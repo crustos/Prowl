@@ -46,7 +46,11 @@ try {
   await page.goto(url);
   await page.waitForFunction("window.prowlReady === true || window.prowlFailed", null, { timeout: 30000 }).catch(() => {});
   const ok = await page.evaluate("!!window.prowl && !window.prowl.error");
-  if (!ok) { console.log("FAIL: the page did not start", errors.join("\n")); process.exit(1); }
+  if (!ok) {
+    console.log("FAIL: the page did not start", errors.join("\n"));
+    console.log("the page's log:\n" + await page.evaluate(() => document.getElementById("log").textContent));
+    process.exit(1);
+  }
   await page.evaluate((n) => window.prowl.step(n), frames);
   const out = await page.evaluate(() => {
     const c = document.getElementById("screen"), gl = c.getContext("webgl2");
@@ -55,6 +59,8 @@ try {
     return { w, h, px: Array.from(px), log: document.getElementById("log").textContent };
   });
   console.log(out.log.trimEnd());
+  const jit = await page.evaluate(() => window.prowl.jit);
+  if (jit && jit.compiled + jit.refused > 0) console.log(`wasm JIT in the page: ${jit.compiled} method(s) compiled, ${jit.refused} refused (too large for the main thread: they stay interpreted)`);
   if (errors.length) { console.log("page errors:\n" + errors.join("\n")); code = 1; }
   const px = Uint8Array.from(out.px);
   if (shot) await page.locator("#screen").screenshot({ path: shot });

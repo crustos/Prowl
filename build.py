@@ -17,6 +17,8 @@ Commands (the default, with none, is `all`):
     player    translate a game to C and build a native player with no .NET in it:  player GAME [--verify] [--static] [--run] [--sanitize] [--dotnet]
               add --wasm for a WebAssembly (wasm32-wasi) module run under node; --dna to let classes outside the C# subset run on DotNetAnywhere
               (GAME is a folder of .cs files with a static Main; tools/ccsharp/player_build.py has the details)
+    gfx       build the 2D renderer (Native/Gfx2D) for this machine: needs the EGL/GLES headers and ../crust
+    webtest   Samples/Draw2D as a native player and as a web page (WebGL2) run in headless Chromium, and compare the two pictures
     samples   every folder of Samples/ (or the named ones), built as a player and compared with the same game on .NET: samples [NAME..] [--sanitize] [--wasm]
     check3d   does the 3D switch still hold? compiles with and without 3D and compares   (tools/check_physics3d.py)
     status    what was found where
@@ -206,11 +208,48 @@ def cmd_ccsharp(a):
     run([sys.executable, os.path.join(ROOT, "tools", "ccsharp", "ccsharp_scan.py"), "conformance"])
 
 
+def cmd_gfx(a):
+    """The 2D renderer (Native/Gfx2D) for this machine: libgfx2d_static.a (linked into a player that draws) and libgfx2d.so (what the .NET reference loads).
+    It includes Crust's GLES 3.1 batch renderer from ../crust, and needs the EGL / GLES headers (apt install libegl-dev libgles-dev)."""
+    crust = sibling("crust")
+    batch = os.path.join(crust, "examples", "unity_pack")
+    if not os.path.exists(os.path.join(batch, "gles3_batch.h")):
+        sys.exit("build.py: crust is not at %s (python3 build.py deps --ccsharp clones CCSharp, whose own build.py clones crust beside it)" % crust)
+    src = os.path.join(ROOT, "Native", "Gfx2D")
+    bdir = os.path.join(BUILD, rid(), "gfx2d")
+    os.makedirs(bdir, exist_ok=True)
+    say("native 2D renderer: Native/Gfx2D (%s)" % rid())
+    cc = os.environ.get("CC") or "cc"
+    flags = ["-O2", "-ffp-contract=off", "-w", "-fPIC", "-I", src, "-I", batch]
+    obj = os.path.join(bdir, "gfx2d.o")
+    run([cc] + flags + ["-c", os.path.join(src, "gfx2d.c"), "-o", obj])
+    static = os.path.join(bdir, "libgfx2d_static.a")
+    if os.path.exists(static):
+        os.remove(static)
+    run(["ar", "rcs", static, obj])
+    so = os.path.join(bdir, "libgfx2d.so")
+    run([cc, "-shared", "-o", so, obj, "-lEGL", "-lGLESv2", "-lm"])
+    dest = os.path.join(ROOT, "Libraries", rid(), "native")
+    os.makedirs(dest, exist_ok=True)
+    shutil.copy2(so, dest)
+    print("   built %s and %s; installed %s" % (static, so, os.path.join(dest, "libgfx2d.so")))
+
+
+def cmd_webtest(a):
+    """Samples/Draw2D as a native player (the reference frame) and as a page, which headless Chromium runs and compares with it. Needs node, Playwright with
+    Chromium, and what `gfx` and `player --web` need."""
+    cmd_gfx(a)
+    run([sys.executable, PLAYER_BUILD, os.path.join("Samples", "Draw2D"), "--run"], cwd=ROOT)
+    run([sys.executable, PLAYER_BUILD, os.path.join("Samples", "Draw2D"), "--web"], cwd=ROOT)
+    run(["node", os.path.join(ROOT, "tools", "web_test.mjs"), os.path.join(ROOT, "Build", "Player", "Draw2D-web"),
+         "--ref", os.path.join(ROOT, "Build", "Player", "Draw2D", "frame_0000.ppm")], cwd=ROOT)
+
+
 PLAYER_BUILD = os.path.join(ROOT, "tools", "ccsharp", "player_build.py")
 
 
 def player_flags(a):
-    return [f for f, on in (("--verify", a.verify), ("--static", a.static), ("--run", a.run), ("--sanitize", a.sanitize), ("--dotnet", a.dotnet), ("--wasm", a.wasm), ("--dna", a.dna)) if on]
+    return [f for f, on in (("--verify", a.verify), ("--static", a.static), ("--run", a.run), ("--sanitize", a.sanitize), ("--dotnet", a.dotnet), ("--wasm", a.wasm), ("--web", a.web), ("--dna", a.dna)) if on]
 
 
 def cmd_player(a):
@@ -280,7 +319,7 @@ def cmd_clean(a):
 
 
 COMMANDS = {"all": cmd_all, "deps": cmd_deps, "native": cmd_native, "managed": cmd_managed, "test": cmd_test, "scan": cmd_scan,
-            "ccsharp": cmd_ccsharp, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
+            "ccsharp": cmd_ccsharp, "gfx": cmd_gfx, "webtest": cmd_webtest, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
 
 
 def main():
@@ -299,6 +338,7 @@ def main():
     ap.add_argument("--sanitize", action="store_true", help="player / samples: also run the translated C under AddressSanitizer and UBSan")
     ap.add_argument("--dotnet", action="store_true", help="player: only run the game on .NET (the reference)")
     ap.add_argument("--dna", action="store_true", help="player: classes outside the C# subset (lambdas, try/catch) run managed on DotNetAnywhere, in the same executable")
+    ap.add_argument("--web", action="store_true", help="player: a page (index.html + wasm + JS) that runs the game in a browser, drawing with WebGL2")
     ap.add_argument("--wasm", action="store_true", help="player: build for WebAssembly (wasm32-wasi) and run it under node")
     ap.add_argument("--3d", dest="three_d", action="store_true", help="also compile the unmaintained 3D physics (default: 2D only)")
     ap.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"], help="build configuration (default Release)")

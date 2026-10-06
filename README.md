@@ -350,7 +350,7 @@ surfaceless: Mesa's software GL here, a GPU elsewhere) and saves PPM frames; **t
 clang (scalar, no SIMD: Box2D is deterministic across its SIMD paths) into `Build/Native/wasm32`, and the translated C is linked into `Build/Player/<game>-wasm/prowl2d-player.wasm`, with a
 launcher that runs it under node 20+ (the host is DotNetAnywhere's `tools/run_wasm.mjs`, found through CCSharp's `--wasm` support, so `../CCSharp` and `../DotNetAnywhere` must be current).
 It needs clang, lld, llvm-ar, wasi-libc and node; `--verify` also needs the .NET 10 SDK. All four samples print exactly what the .NET run prints (`python3 build.py samples --wasm`).
-A game that draws is refused for now: the renderer is EGL/GLES, and its WebGL build is a later step. Box2D-Packed needed one change for 32-bit pointers: its two cache-line layout
+A game that draws needs `--web` (below): under node there is no GL. Box2D-Packed needed one change for 32-bit pointers: its two cache-line layout
 assertions on `b2Shape` are now 64-bit only (`src/shape.h`).
 
 **Scripts outside the subset: `--dna`.** A script that uses a lambda or `try`/`catch` (or generics, LINQ-free collections, anything Crust cannot lower) is refused by a plain
@@ -361,7 +361,15 @@ generated bridge. The player is `Build/Player/<game>/prowl2d-player` with `playe
 (`[MaxInstances]`), which `Prowl.Core2D`'s are; the rules and the diagnostics are CCSharp's (see its README, "Native and managed"). Managed code is interpreted (with DotNetAnywhere's JIT on wasm),
 so keep the per-frame hot loops in the native part. Not combined with drawing games, `--static` or `--sanitize` yet.
 
-**What it does not have yet:** a window and presentation, the renderer's lights and sprite effects (it has them; no component feeds them), scene files (a game builds its scene in code), input, audio, joints,
+**In a browser: `--web`.** `python3 build.py player Samples/Draw2D --web` makes `Build/Player/Draw2D-web/` (`index.html`, `prowl_web.js`, `prowl2d-player.wasm`: serve the folder over http
+and open it). The module is a WASI reactor: the page loads it, supplies a small WASI (stdout to the page's log, no file system), calls the game's `static int Init()` once and its
+`static void Frame()` once per 1/60 s of game time (a fixed step, whatever the display's refresh rate). The sprites are drawn by WebGL2: `Native/Gfx2D/gfx2d_web.c` implements `gfx2d.h` (the
+same atlas and the same conversion of the batch as the desktop renderer, shared in `gfx2d_common.h`) and `Native/Gfx2D/web/prowl_web.js` does the GL, one instanced draw call over the same
+24-byte sprites. (Crust's own batch renderer is OpenGL ES 3.1, which WebGL2 is not, so the page has its own small shader: the sprite path of it, without lights or effects, which
+`gfx2d` does not use either.) `python3 build.py webtest` builds `Samples/Draw2D` both ways, runs the page in headless Chromium (SwiftShader), steps 240 frames and compares the canvas with the native frame:
+the largest difference is one level of 255 (two software rasterisers rounding differently). Not combined with `--dna` yet, and no input, audio or window sizing: the canvas is fixed at the size the game asks `GFX.Init` for.
+
+**What it does not have yet:** a native window (the web page presents), the renderer's lights and sprite effects (it has them; no component feeds them), scene files (a game builds its scene in code), input, audio, joints,
 and anything but Linux x86-64 (the native archives are built for the machine they are built on).
 
 ## Building

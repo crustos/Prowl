@@ -350,8 +350,16 @@ surfaceless: Mesa's software GL here, a GPU elsewhere) and saves PPM frames; **t
 clang (scalar, no SIMD: Box2D is deterministic across its SIMD paths) into `Build/Native/wasm32`, and the translated C is linked into `Build/Player/<game>-wasm/prowl2d-player.wasm`, with a
 launcher that runs it under node 20+ (the host is DotNetAnywhere's `tools/run_wasm.mjs`, found through CCSharp's `--wasm` support, so `../CCSharp` and `../DotNetAnywhere` must be current).
 It needs clang, lld, llvm-ar, wasi-libc and node; `--verify` also needs the .NET 10 SDK. All four samples print exactly what the .NET run prints (`python3 build.py samples --wasm`).
-A game that draws is refused for now: the renderer is EGL/GLES, and its WebGL build is the next step. Box2D-Packed needed one change for 32-bit pointers: its two cache-line layout
+A game that draws is refused for now: the renderer is EGL/GLES, and its WebGL build is a later step. Box2D-Packed needed one change for 32-bit pointers: its two cache-line layout
 assertions on `b2Shape` are now 64-bit only (`src/shape.h`).
+
+**Scripts outside the subset: `--dna`.** A script that uses a lambda or `try`/`catch` (or generics, LINQ-free collections, anything Crust cannot lower) is refused by a plain
+`player` build, with a hint. With `--dna` (or a `// dna` line in any file of the game, as `Samples/Script2D` has) CC# splits the game: classes it can lower stay native C, and the ones it
+cannot, plus everything that uses them (the generated call sink, `Main`), are compiled to CIL and run by DotNetAnywhere linked into the same executable, calling the native engine through a
+generated bridge. The player is `Build/Player/<game>/prowl2d-player` with `player.managed.dll` and `corlib.dll` beside it; with `--wasm` it is the same in one wasm module
+(`python3 build.py player Samples/Script2D --wasm --verify --run`). Both print what the .NET run prints. The native engine classes a managed script touches must be arena classes
+(`[MaxInstances]`), which `Prowl.Core2D`'s are; the rules and the diagnostics are CCSharp's (see its README, "Native and managed"). Managed code is interpreted (with DotNetAnywhere's JIT on wasm),
+so keep the per-frame hot loops in the native part. Not combined with drawing games, `--static` or `--sanitize` yet.
 
 **What it does not have yet:** a window and presentation, the renderer's lights and sprite effects (it has them; no component feeds them), scene files (a game builds its scene in code), input, audio, joints,
 and anything but Linux x86-64 (the native archives are built for the machine they are built on).

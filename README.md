@@ -63,6 +63,15 @@ The second point is a direction, and most of it is not built yet. This page sepa
   menu entries act on the selection (a body plus a second selected body connects them, a lone body is anchored to the world, nothing selected makes a
   test body). While a joint is selected the scene view shows draggable handles for its anchors, slide axis and limits, with undo, and the inspector has a
   *Rebuild Joint* button.
+- **Destruction.** `PixelTerrain2D` (ground from a texture or generated, cut into chunks, with box or chain shapes that follow the pixels as you
+  `DigCircle` / `AddCircle` / `DigBox` / `AddBox`) and `Explodable2D` (breaks a box or polygon collider into convex dynamic fragments that keep the
+  object's velocity, mass, layer and material, are flung by a blast and dig a crater in every active terrain). Both are thin layers over
+  `Prowl.Runtime/Destruction2D`, the code the 2D player shares (`Prowl.Core2D.PixelTerrain2D`, `Shatter2D`), so the same terrain and the same seed give the
+  same ground and the same pieces in the editor and in a built game. *Add Component > Physics 2D > Pixel Terrain 2D / Explodable 2D*, and
+  *GameObject > 2D Physics > Destruction* (terrain, explodable box, explodable polygon, *Make Selected Explodable*). The inspectors are attribute-driven like
+  the other 2D components; *Explode*, *Rebuild* and *Dig Test Crater* buttons work while playing. **They collide but do not draw:** the terrain exposes its
+  `Pixels` and `Version` and fragments come with their outlines in `Explodable2D.Exploded`, for whatever renders them. No scene-view brush yet. Written
+  against the engine APIs as read from source; **not yet compiled or run** (see the note below).
 
 ```csharp
 // using Prowl.Runtime; using Prowl.Vector;
@@ -97,7 +106,7 @@ public class Player : MonoBehaviour
 sample scene (the existing samples are 3D). Particles collide with planes but not with the 2D world. The joints are new and the 261 checks
 below predate them: they are not yet covered by the harness, and the joint gizmos have only been read, not looked at. The joint menu items and the scene-view handle tool
 (`Prowl.Editor/GUI/Physics2DJointCreators.cs`, `GUI/SceneView/Editors/JointSceneEditor.cs`) are written against the editor APIs as read from source and have
-never been compiled or run.
+never been compiled or run, and neither have `PixelTerrain2D`, `Explodable2D` and `Prowl.Editor/GUI/DestructionCreators.cs`.
 
 **Limits you should know about.** Box2D-Packed has one world per process, so only one scene at a time can have live 2D bodies; a preview scene beside
 the running game gets inert components and one logged error rather than corrupting the live world. Handles are 16-bit, which caps the native world at 65,535 bodies

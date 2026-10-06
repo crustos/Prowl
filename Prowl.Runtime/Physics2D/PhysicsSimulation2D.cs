@@ -278,6 +278,12 @@ internal sealed class PhysicsSimulation2D
         }
     }
 
+    /// <summary>
+    /// Call before destroying the native shapes of a collider that other shapes may still touch: contacts that end only
+    /// because a shape was destroyed are reported to the game as ended (see <c>SimCore2D.ShapesVanishing</c>).
+    /// </summary>
+    public void ShapesVanishing(int collider) { _core.ShapesVanishing(collider); }
+
     public void UnregisterCollider(int index)
     {
         if (!_core.Registry.RemoveCollider(index)) return;

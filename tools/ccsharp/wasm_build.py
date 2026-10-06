@@ -105,7 +105,7 @@ def link_player(out_dir, name="prowl2d-player"):
     return launcher, module
 
 
-def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player"):
+def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player", gfx=False, web=False, main_class=None):
     """A game with managed classes (--dna): the translated C, the glue that calls DotNetAnywhere, the DotNetAnywhere runtime (with the native functions
     the managed code may call in its FFI table), and Box2D, into out_dir/NAME (a native executable) or out_dir/NAME.wasm with its launcher. The managed
     assembly (player.managed.dll, the name the glue looks for beside the executable) and corlib.dll are copied beside it. Returns the executable
@@ -125,6 +125,10 @@ def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player"):
     shutil.copy2(os.path.join(bdir, "corlib.dll"), out_dir)
     srcs = ["player.c", "player.bridge.c"]
     inc = ["-I.", "-I" + os.path.join(home, "native", "src")]
+    if wasm and gfx and not web:
+        sys.exit("player_build: a game that draws needs --web under wasm (under node there is no GL)")
+    if web:
+        return _link_hybrid_web(c, home, bdir, lib, out_dir, c_dir, main_class, name)
     if wasm:
         natives = build_natives()
         module = os.path.join(out_dir, name + ".wasm")
@@ -140,6 +144,12 @@ def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player"):
                 sys.exit("player_build: %s is missing (python3 build.py native builds it)" % n)
             libs.append(p)
         exe = os.path.join(out_dir, name)
+        if gfx:
+            g = scan.find_native_lib("libgfx2d_static.a")
+            if g is None:
+                sys.exit("player_build: libgfx2d_static.a is missing (python3 build.py gfx builds it)")
+            inc.append("-I" + os.path.join(PROWL, "Native", "Gfx2D"))
+            libs = [g] + libs + ["-lEGL", "-lGLESv2"]
         cmd = [cc or "cc", "-O2", "-ffp-contract=off", "-w"] + inc + ["-o", exe] + srcs + [lib] + libs + ["-lm", "-lpthread"]
     r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
     if r.returncode != 0:
@@ -149,6 +159,17 @@ def link_hybrid(out_dir, c_dir, wasm, cc=None, name="prowl2d-player"):
     if wasm:
         c._wasm_package(exe, "player", home, True)
     return exe
+
+
+def write_page(out_dir, files):
+    """The page and its host script. `files` are the ones the page fetches and hands to the module as its file system (a hybrid player's assemblies)."""
+    web = os.path.join(PROWL, "Native", "Gfx2D", "web")
+    shutil.copy2(os.path.join(web, "prowl_web.js"), os.path.join(out_dir, "prowl_web.js"))
+    with open(os.path.join(web, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    import json
+    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html.replace("__PROWL_FILES__", json.dumps(files)))
 
 
 WEB_ENTRY = """
@@ -187,6 +208,62 @@ def link_web(out_dir, c_file, main_class, name="prowl2d-player"):
         print("player_build: clang (wasm32) rejected the web build:\n   " + "\n   ".join(e[:220] for e in errs[:8]))
         sys.exit(1)
     os.remove(web_c)
-    for f in ("index.html", "prowl_web.js"):
-        shutil.copy2(os.path.join(gfx_dir, "web", f), os.path.join(out_dir, f))
+    write_page(out_dir, [])
+    return module
+
+
+HYBRID_ENTRY = """
+/* the page's entry points (player_build --web --dna): the game's managed Init() once, then Frame() once per 1/60 s, called through DotNetAnywhere */
+__attribute__((export_name("prowl_init"))) int prowl_init(void) {
+\tstatic DNA_Method *m;
+\tDNA_Value r;
+\tif (m == NULL) m = ccs_find("%(ns)s", "%(cls)s", "Init", ">i");
+\tccs_call(m, NULL, 0, &r);
+\treturn r.u.i;
+}
+__attribute__((export_name("prowl_frame"))) void prowl_frame(void) {
+\tstatic DNA_Method *m;
+\tif (m == NULL) m = ccs_find("%(ns)s", "%(cls)s", "Frame", ">v");
+\tccs_call(m, NULL, 0, NULL);
+}
+"""
+
+
+def _link_hybrid_web(c, home, bdir, lib, out_dir, c_dir, main_class, name):
+    """The hybrid page: the translated C, the DotNetAnywhere glue, the runtime, Box2D and the web renderer in one wasm reactor; player.managed.dll and
+    corlib.dll beside it, which the page's WASI gives the runtime as files (prowl_web.js: `files`). The game's Init() and Frame() are called where they
+    are: through DotNetAnywhere when the class is managed (it is, once it uses a managed script), directly when it stayed native."""
+    cname = main_class.replace(".", "_")
+    ns, _, cls = main_class.rpartition(".")
+    with open(os.path.join(c_dir, "player.c"), encoding="utf-8") as f:
+        player = f.read()
+    with open(os.path.join(c_dir, "player.bridge.c"), encoding="utf-8") as f:
+        glue = f.read()
+    native = ("static int %s_Init(void)" % cname) in player
+    if native:
+        player += WEB_ENTRY % {"c": cname}
+    else:
+        glue += HYBRID_ENTRY % {"ns": ns, "cls": cls}
+    for fn, text in (("player.web.c", player), ("player.bridge.web.c", glue)):
+        with open(os.path.join(out_dir, fn), "w", encoding="utf-8") as f:
+            f.write(text)
+    shutil.copy2(os.path.join(c_dir, "player.managed.dll"), os.path.join(out_dir, "player.managed.dll"))
+    shutil.copy2(os.path.join(bdir, "corlib.dll"), out_dir)
+    natives = build_natives()
+    gfx_dir = os.path.join(PROWL, "Native", "Gfx2D")
+    module = os.path.join(out_dir, name + ".wasm")
+    if os.path.exists(module):
+        os.remove(module)
+    cmd = ([c.wasm_compiler()] + _cflags(c) + ["-I.", "-I" + gfx_dir, "-I" + os.path.join(PROWL, "Native", "Box2D"), "-I" + os.path.join(home, "native", "src"),
+           "-mexec-model=reactor", "-o", module, "player.web.c", "player.bridge.web.c", os.path.join(gfx_dir, "gfx2d_web.c"), lib,
+           "-L" + natives, "-lprowl_box2d_static", "-lbox2d", "-lm"]
+           + ["-fuse-ld=lld", "-Wl,-z,stack-size=8388608", "-Wl,--export=prowl_init", "-Wl,--export=prowl_frame", "-Wl,--export-table", "-Wl,--growable-table"])
+    r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
+    for fn in ("player.web.c", "player.bridge.web.c"):
+        os.remove(os.path.join(out_dir, fn))
+    if r.returncode != 0:
+        errs = [l for l in r.stderr.splitlines() if "error" in l or "undefined" in l]
+        print("player_build: clang (wasm32) rejected the hybrid web build:\n   " + "\n   ".join(e[:220] for e in errs[:10]))
+        sys.exit(1)
+    write_page(out_dir, ["player.managed.dll", "corlib.dll"])
     return module

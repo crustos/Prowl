@@ -287,8 +287,8 @@ def main():
             sys.exit("player_build: --wasm: " + why)
         if a.static or a.sanitize:
             sys.exit("player_build: --static and --sanitize are for the native player; --wasm builds a wasm module")
-    if a.dna and (a.static or a.sanitize or gfx_hint(files)):
-        sys.exit("player_build: --dna is not combined with --static, --sanitize or a game that draws (yet)")
+    if a.dna and (a.static or a.sanitize):
+        sys.exit("player_build: --dna is not combined with --static or --sanitize (yet)")
     if native_dir is None and not (a.wasm and not a.verify):
         sys.exit("player_build: the native library is not built (python3 build.py native)")
 
@@ -297,8 +297,7 @@ def main():
     gfx = uses_gfx(files)
     if gfx and a.wasm and not a.web:
         sys.exit("player_build: --wasm: a game that draws needs a renderer: --web builds it for a page (WebGL2); under node there is no GL")
-    if a.web and a.dna:
-        sys.exit("player_build: --web is not combined with --dna yet")
+
     if gfx:
         check_constants()
         if a.static:
@@ -339,7 +338,10 @@ def main():
     if hybrid:
         import wasm_build
         shutil.copy2(os.path.join(PROWL, "Native", "Box2D", "prowl_box2d.h"), os.path.join(out_dir, "prowl_box2d.h"))
-        exe = wasm_build.link_hybrid(out_dir, os.path.dirname(c_file), a.wasm, a.cc if a.cc != "cc" else None)
+        exe = wasm_build.link_hybrid(out_dir, os.path.dirname(c_file), a.wasm, a.cc if a.cc != "cc" else None, gfx=gfx, web=a.web, main_class=main_class)
+        if a.web:
+            print("             a page: serve %s over http (python3 -m http.server) and open index.html" % os.path.relpath(out_dir, PROWL))
+            return 0
         print("built       %s  (hybrid: native C + managed on DotNetAnywhere%s)" % (os.path.relpath(exe, PROWL), ", wasm32" if a.wasm else ""))
     elif a.web:
         module = wasm_build.link_web(out_dir, c_file, main_class)

@@ -12,7 +12,7 @@ the engine's fixed-step game loop over it (so a game's Main is `Scripts.Init(); 
 What it reads from a script class (and refuses, with the file and line, when it is wrong):
   * `[Script]` or `[Script(Order = n)]`           the execution order, lower first
   * `[MaxInstances(N)]`                            how many can exist at once; N must be an integer literal here
-  * `public Component Self;`                       set by the factory
+  * `public Component Self;`                       set by the factory (Scripts.AddName(node) returns the script; Scripts.AttachName(node) returns nothing)
   * the callbacks, by name and signature:
         Start() Update() FixedUpdate() LateUpdate() OnEnable() OnDisable()
         OnCollisionBegin2D(Collision2D c)  OnCollisionEnd2D(Collision2D c)
@@ -220,6 +220,9 @@ def generate(out_path, sources):
         L.append("        Scene2D.Current.Finish(c);                   // enabled now, so the script is set up before its OnEnable can be delivered")
         L.append("        return s;")
         L.append("    }")
+        L.append("")
+        L.append("    /// <summary>The same, for a caller that does not need the script: it returns nothing, which is what native code can call when the script is managed (--dna).</summary>")
+        L.append("    public static void Attach%s(Node node) { Add%s(node); }" % (n, n))
         L.append("")
         L.append("    /// <summary>The %s a component is, or null.</summary>" % n)
         L.append("    public static %s As%s(Component c)" % (n, n))

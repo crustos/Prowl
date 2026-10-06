@@ -13,7 +13,7 @@
   import { startProwl } from "./prowl_web.js";
   const out = document.getElementById("log");
   const log = (s) => { out.textContent += s + "\n"; out.scrollTop = out.scrollHeight; };
-  const manual = new URLSearchParams(location.search).has("manual");
-  window.prowl = await startProwl({ wasm: "prowl2d-player.wasm", files: __PROWL_FILES__, canvas: document.getElementById("screen"), log, manual });
+  const q = new URLSearchParams(location.search), manual = q.has("manual"), gfx = q.get("gfx") || "auto";
+  window.prowl = await startProwl({ wasm: "prowl2d-player.wasm", files: __PROWL_FILES__, canvas: document.getElementById("screen"), log, manual, gfx });
   window.prowlReady = true;
 </script>

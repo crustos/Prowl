@@ -3,7 +3,8 @@
 //   <canvas id="screen"></canvas>  +  startProwl({ wasm: "game.wasm", canvas, log })
 //
 // The module is a WASI "reactor" (no main loop of its own): this loads it, gives it a small WASI (stdout goes to `log`; no file system) and the
-// "gfx" imports of Native/Gfx2D/gfx2d_web.c, which draw with WebGL2 right here, then calls its exports prowl_init() once and prowl_frame() once
+// "gfx" imports of Native/Gfx2D/gfx2d_web.c, which draw right here, with WebGPU when the browser has it and WebGL2 otherwise (`gfx` option, or `?gfx=webgpu` /
+// `?gfx=webgl2` in the page's URL; the default, "auto", prefers WebGPU), then calls its exports prowl_init() once and prowl_frame() once
 // per 1/60 s of game time (a fixed step, as the native player's frames are, whatever the display's refresh rate is).
 // `?manual=1` in the page's URL stops the clock: window.prowl.step(n) then advances n frames (what the tests use).
 
@@ -41,7 +42,7 @@ void main() {
     frag = vec4(t.rgb * v_color.rgb, t.a * v_color.a);
 }`;
 
-function makeGfx(canvas, memory, log) {
+function makeGfxGL(canvas, memory, log) {
   let gl = null, prog, vbo, vao, atlas, uView, uRects, w = 0, h = 0, rects = null;
   const mem8 = () => new Uint8Array(memory().buffer);
   function shader(type, src) {
@@ -104,7 +105,178 @@ function makeGfx(canvas, memory, log) {
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(memory().buffer, ptr, w * h * 4));
     },
     gfx_web_shutdown() { gl = null; },
+    read() { const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); return { w, h, rgba: px }; },
   };
+}
+const glBackend = (canvas, memory, log) => {
+  const g = makeGfxGL(canvas, memory, log);
+  // the canvas as it was just drawn: RGBA, rows bottom to top (what both backends give)
+  const read = async () => g.read();
+  return { kind: "webgl2", imports: g, read, ready: async () => true };
+};
+
+
+// ---- WebGPU: the same sprite path (24-byte instances, four-vertex strip, SRC_ALPHA / ONE_MINUS_SRC_ALPHA) in WGSL. ----
+const WGSL = `
+struct U { view: vec4f, rects: array<vec4f, 8> };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+struct VIn {
+  @builtin(vertex_index) vi: u32,
+  @location(0) pos: vec2f,
+  @location(1) hsz: vec2f,
+  @location(2) sr: vec2u,       // sprite, rotation (an i16 in a u16)
+  @location(3) color: vec4f,
+};
+struct VOut { @builtin(position) p: vec4f, @location(0) color: vec4f, @location(1) uv: vec2f };
+@vertex fn vs(i: VIn) -> VOut {
+  let c = vec2f(f32(i.vi & 1u), f32((i.vi >> 1u) & 1u));
+  let local = (c * 2.0 - 1.0) * i.hsz;
+  let rot = bitcast<i32>(i.sr.y << 16u) >> 16u;
+  let ang = f32(rot) * (6.28318530718 / 65536.0);
+  let cs = cos(ang); let sn = sin(ang);
+  let w = i.pos + vec2f(cs * local.x - sn * local.y, sn * local.x + cs * local.y);
+  var o: VOut;
+  o.p = vec4f(2.0 * (w - u.view.xy) / (u.view.zw - u.view.xy) - 1.0, 0.0, 1.0);
+  o.color = i.color;
+  let r = u.rects[i.sr.x & 7u];
+  o.uv = mix(r.xy, r.zw, c);
+  return o;
+}
+@fragment fn fs(i: VOut) -> @location(0) vec4f {
+  let t = textureSampleLevel(atlas, samp, i.uv, 0.0);
+  return vec4f(t.rgb * i.color.rgb, t.a * i.color.a);
+}`;
+
+// `target` onto the canvas: a pass that loads each pixel (a texture-to-texture copy into the canvas's own texture is not something every implementation takes)
+const BLIT = `
+@group(0) @binding(0) var src: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f { return textureLoad(src, vec2i(p.xy), 0); }`;
+
+// Everything that can fail or must be awaited (adapter, device, pipeline, the canvas's context) happens here, before gfx_web_init, which is synchronous;
+// null when this browser has no usable WebGPU (nothing has touched the canvas then, so WebGL2 can still take it).
+async function makeGfxGPU(canvas, memory, log) {
+  if (!globalThis.navigator || !navigator.gpu) return null;
+  let adapter, device, ctx, pipeline, blitPipe, blitLayout, layout, sampler, spriteBuf, uniBuf;
+  const FORMAT = "rgba8unorm";
+  try {
+    adapter = await navigator.gpu.requestAdapter();     // kept in this closure: if it is collected, Chrome tears the whole instance down
+    if (!adapter) return null;
+    device = await adapter.requestDevice();
+    device.lost.then((i) => log("webgpu: device lost: " + i.message));
+    device.addEventListener("uncapturederror", (e) => log("webgpu: " + e.error.message));
+    const module = device.createShaderModule({ code: WGSL });
+    const info = await module.getCompilationInfo();
+    for (const m of info.messages) if (m.type === "error") throw new Error("WGSL " + m.lineNum + ": " + m.message);
+    layout = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+    ] });
+    pipeline = await device.createRenderPipelineAsync({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+      vertex: { module, entryPoint: "vs", buffers: [{
+        arrayStride: 24, stepMode: "instance",
+        // EngineGpuSprite, 24 bytes: float x,y | half hw,hh | u16 sprite | i16 rot | u8 r,g,b,a | u8 layer,flags,effect,arg
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x2" },
+          { shaderLocation: 1, offset: 8, format: "float16x2" },
+          { shaderLocation: 2, offset: 12, format: "uint16x2" },
+          { shaderLocation: 3, offset: 16, format: "unorm8x4" },
+        ] }] },
+      fragment: { module, entryPoint: "fs", targets: [{ format: FORMAT, blend: {
+        color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+        alpha: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" } } }] },
+      primitive: { topology: "triangle-strip" },
+    });
+    const bmod = device.createShaderModule({ code: BLIT });
+    blitLayout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }] });
+    blitPipe = await device.createRenderPipelineAsync({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [blitLayout] }),
+      vertex: { module: bmod, entryPoint: "vs" }, fragment: { module: bmod, entryPoint: "fs", targets: [{ format: FORMAT }] },
+      primitive: { topology: "triangle-list" } });
+    sampler = device.createSampler({ magFilter: "nearest", minFilter: "nearest", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge" });
+    spriteBuf = device.createBuffer({ size: 8192 * 24, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    uniBuf = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    ctx = canvas.getContext("webgpu");
+    if (!ctx) return null;
+  } catch (e) { log("webgpu unavailable: " + e.message); return null; }
+
+  let w = 0, h = 0, rects, bind, blitBind, target, bpr = 0, stage, cache = null, reading = false, wantRead = false;
+  const mem8 = () => new Uint8Array(memory().buffer);
+
+  // `target` rows copied into `buf` (mapped by the caller), top to bottom -> an RGBA array, rows bottom to top
+  const unpack = (mapped) => {
+    const out = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) out.set(mapped.subarray(y * bpr, y * bpr + w * 4), (h - 1 - y) * w * 4);
+    return out;
+  };
+  const copyOut = (enc, buf) => enc.copyTextureToBuffer({ texture: target }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
+
+  const imports = {
+    gfx_web_init(width, height, atlasPtr, side, rectsPtr, sprites) {
+      try {
+        w = width; h = height; canvas.width = w; canvas.height = h;
+        ctx.configure({ device, format: FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT, alphaMode: "opaque" });
+        const atlas = device.createTexture({ size: [side, side], format: FORMAT, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+        device.queue.writeTexture({ texture: atlas }, mem8().slice(atlasPtr, atlasPtr + side * side * 4), { bytesPerRow: side * 4 }, [side, side]);
+        const r16 = new Uint16Array(memory().buffer.slice(rectsPtr, rectsPtr + sprites * 8));
+        rects = new Float32Array(36);                      // view (4) + 8 rects of u0 v0 u1 v1
+        for (let i = 0; i < sprites * 4; i++) rects[4 + i] = r16[i] / 65535;
+        bind = device.createBindGroup({ layout, entries: [
+          { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: atlas.createView() }, { binding: 2, resource: sampler } ] });
+        // the picture is drawn into `target`, then blitted to the canvas: so it can be read back at any time (the canvas's own texture expires with the frame)
+        target = device.createTexture({ size: [w, h], format: FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
+        blitBind = device.createBindGroup({ layout: blitLayout, entries: [{ binding: 0, resource: target.createView() }] });
+        bpr = Math.ceil(w * 4 / 256) * 256;
+        stage = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        return 1;
+      } catch (e) { log("gfx_web_init: " + e.message); return 0; }
+    },
+    gfx_web_draw(ptr, n, l, b, r, t, cr, cg, cb) {
+      rects[0] = l; rects[1] = b; rects[2] = r; rects[3] = t;
+      device.queue.writeBuffer(uniBuf, 0, rects);
+      if (n > 0) device.queue.writeBuffer(spriteBuf, 0, memory().buffer, ptr, n * 24);
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginRenderPass({ colorAttachments: [{ view: target.createView(), clearValue: { r: cr, g: cg, b: cb, a: 1 }, loadOp: "clear", storeOp: "store" }] });
+      if (n > 0) { pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.setVertexBuffer(0, spriteBuf); pass.draw(4, n); }
+      pass.end();
+      const out = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "store" }] });
+      out.setPipeline(blitPipe); out.setBindGroup(0, blitBind); out.draw(3); out.end();
+      const grab = wantRead && !reading;
+      if (grab) copyOut(enc, stage);
+      device.queue.submit([enc.finish()]);
+      if (grab) {
+        reading = true;
+        stage.mapAsync(GPUMapMode.READ).then(() => { cache = unpack(new Uint8Array(stage.getMappedRange())); stage.unmap(); reading = false; }, () => { reading = false; });
+      }
+    },
+    // A synchronous read cannot wait for the GPU. Once a game has asked for pixels (gfx_pixel, gfx_frame_hash) the backend reads each frame back in the
+    // background, and this hands over the newest picture that has arrived: a frame or more behind, black until the first one comes. The exact picture
+    // is `state.readPixels()`, which is asynchronous.
+    gfx_web_read(ptr) {
+      wantRead = true;
+      const dst = new Uint8Array(memory().buffer, ptr, w * h * 4);
+      if (cache) dst.set(cache); else dst.fill(0);
+    },
+    gfx_web_shutdown() { wantRead = false; cache = null; },
+  };
+  async function read() {
+    const buf = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const enc = device.createCommandEncoder();
+    copyOut(enc, buf);
+    device.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const rgba = unpack(new Uint8Array(buf.getMappedRange()));
+    buf.unmap(); buf.destroy();
+    return { w, h, rgba };
+  }
+  return { kind: "webgpu", imports, read, adapter };
 }
 
 function makeWasi(memory, log, exit, files) {
@@ -209,7 +381,7 @@ function makeWasi(memory, log, exit, files) {
   } });
 }
 
-export async function startProwl({ wasm, canvas, log = console.log, manual = false, files = [] }) {
+export async function startProwl({ wasm, canvas, log = console.log, manual = false, files = [], gfx = "auto" }) {
   let mem = null;
   const fs = {};
   for (const name of files) {
@@ -218,6 +390,10 @@ export async function startProwl({ wasm, canvas, log = console.log, manual = fal
     fs[name] = new Uint8Array(await r.arrayBuffer());
   }
   const memory = () => mem;
+  let backend = null;
+  if (gfx === "auto" || gfx === "webgpu") backend = await makeGfxGPU(canvas, memory, log);
+  if (!backend && gfx === "webgpu") log("webgpu requested but not available here: using WebGL2");
+  if (!backend) backend = glBackend(canvas, memory, log);
   let inst = null;
   const jit = { compiled: 0, refused: 0 };
   const imports = {
@@ -238,14 +414,14 @@ export async function startProwl({ wasm, canvas, log = console.log, manual = fal
       },
     },
     wasi_snapshot_preview1: makeWasi(memory, log, (c) => { throw new Error("exit " + c); }, fs),
-    gfx: makeGfx(canvas, memory, log),
+    gfx: backend.imports,
   };
   const { instance } = await WebAssembly.instantiateStreaming(fetch(wasm), imports);
   inst = instance;
   const x = instance.exports;
   mem = x.memory;
   if (x._initialize) x._initialize();
-  const state = { frame: 0, exports: x, error: null, jit };
+  const state = { frame: 0, exports: x, error: null, jit, backend: backend.kind, readPixels: backend.read, gfx: backend };   // gfx: keeps the WebGPU adapter reachable
   const rc = x.prowl_init();
   if (rc !== 0) { state.error = "prowl_init returned " + rc; log(state.error); return state; }
   state.step = (n = 1) => { for (let i = 0; i < n; i++) { x.prowl_frame(); state.frame++; } return state.frame; };

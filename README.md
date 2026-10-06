@@ -346,6 +346,13 @@ sprite, only the changed instances uploaded). `Samples/Bounce2D` renders a frame
 surfaceless: Mesa's software GL here, a GPU elsewhere) and saves PPM frames; **there is no window yet**. A program that draws loads `libEGL` and `libGLESv2` (and so cannot be fully static); one that does not
 (`Samples/Headless2D`, 40 lines) links only libc and libm, or nothing with `--static`. See [`Native/Gfx2D/README.md`](Native/Gfx2D/README.md) for what is Crust's and what is ours.
 
+**WebAssembly.** `python3 build.py player Samples/Headless2D --wasm --verify --run` builds the same player for `wasm32-wasi` instead: Box2D-Packed and the shim are compiled with
+clang (scalar, no SIMD: Box2D is deterministic across its SIMD paths) into `Build/Native/wasm32`, and the translated C is linked into `Build/Player/<game>-wasm/prowl2d-player.wasm`, with a
+launcher that runs it under node 20+ (the host is DotNetAnywhere's `tools/run_wasm.mjs`, found through CCSharp's `--wasm` support, so `../CCSharp` and `../DotNetAnywhere` must be current).
+It needs clang, lld, llvm-ar, wasi-libc and node; `--verify` also needs the .NET 10 SDK. All four samples print exactly what the .NET run prints (`python3 build.py samples --wasm`).
+A game that draws is refused for now: the renderer is EGL/GLES, and its WebGL build is the next step. Box2D-Packed needed one change for 32-bit pointers: its two cache-line layout
+assertions on `b2Shape` are now 64-bit only (`src/shape.h`).
+
 **What it does not have yet:** a window and presentation, the renderer's lights and sprite effects (it has them; no component feeds them), scene files (a game builds its scene in code), input, audio, joints,
 and anything but Linux x86-64 (the native archives are built for the machine they are built on).
 

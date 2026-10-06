@@ -107,10 +107,15 @@ function makeGfx(canvas, memory, log) {
   };
 }
 
-function makeWasi(memory, log, exit) {
+function makeWasi(memory, log, exit, files) {
   const dec = new TextDecoder();
   let line = "";
-  const ENOSYS = 52, EBADF = 8;
+  const ENOSYS = 52, EBADF = 8, ENOENT = 44, EINVAL = 28;
+  // A read-only file system of the files the page fetched (a hybrid player's managed assembly and corlib.dll): fd 3 is the preopened directory ".",
+  // paths are looked up by name ("./corlib.dll" is "corlib.dll"), and an opened file is a position in its bytes.
+  const open = new Map();
+  let nextFd = 4;
+  const norm = (p) => p.replace(/^(\.\/)+/, "").replace(/^\/+/, "");
   const dv = () => new DataView(memory().buffer);
   const f = {
     fd_write(fd, iovs, n, nwritten) {
@@ -127,37 +132,120 @@ function makeWasi(memory, log, exit) {
       dv().setUint32(nwritten, total, true);
       return 0;
     },
-    fd_read: () => EBADF, fd_close: () => 0, fd_seek: () => 70,
+    fd_read(fd, iovs, n, nread) {
+      const of = open.get(fd);
+      if (!of) return EBADF;
+      let total = 0;
+      for (let i = 0; i < n; i++) {
+        const p = dv().getUint32(iovs + i * 8, true), len = dv().getUint32(iovs + i * 8 + 4, true);
+        const k = Math.min(len, of.data.length - of.pos);
+        new Uint8Array(memory().buffer, p, k).set(of.data.subarray(of.pos, of.pos + k));
+        of.pos += k; total += k;
+        if (k < len) break;
+      }
+      dv().setUint32(nread, total, true);
+      return 0;
+    },
+    fd_close(fd) { open.delete(fd); return 0; },
+    fd_seek(fd, off, whence, out) {
+      const of = open.get(fd);
+      if (!of) return 70;                                  // ESPIPE: the terminals cannot seek
+      const o = Number(off), base = whence === 0 ? 0 : whence === 1 ? of.pos : of.data.length;
+      if (base + o < 0) return EINVAL;
+      of.pos = base + o;
+      dv().setBigUint64(out, BigInt(of.pos), true);
+      return 0;
+    },
+    fd_tell(fd, out) { const of = open.get(fd); if (!of) return EBADF; dv().setBigUint64(out, BigInt(of.pos), true); return 0; },
+    fd_filestat_get(fd, buf) {
+      const of = open.get(fd);
+      if (!of) return EBADF;
+      const d = dv();
+      for (let i = 0; i < 64; i += 8) d.setBigUint64(buf + i, 0n, true);
+      d.setUint8(buf + 16, 4);                             // a regular file
+      d.setBigUint64(buf + 32, BigInt(of.data.length), true);
+      return 0;
+    },
+    fd_prestat_get(fd, buf) {
+      if (fd !== 3) return EBADF;
+      dv().setUint8(buf, 0); dv().setUint32(buf + 4, 1, true);   // a directory, its name one byte long
+      return 0;
+    },
+    fd_prestat_dir_name(fd, p, len) { if (fd !== 3) return EBADF; new Uint8Array(memory().buffer, p, 1)[0] = 46; return 0; },   // "."
+    path_open(dirfd, dirflags, p, plen, oflags, rb, ri, fdflags, out) {
+      if (dirfd !== 3) return EBADF;
+      const name = norm(new TextDecoder().decode(new Uint8Array(memory().buffer, p, plen)));
+      if (globalThis.PROWL_TRACE) console.log("path_open " + dirfd + " " + JSON.stringify(name));
+      const data = files[name];
+      if (!data || (oflags & 0xf) !== 0) return ENOENT;    // read-only: nothing is created or truncated
+      const fd = nextFd++;
+      open.set(fd, { data, pos: 0 });
+      dv().setUint32(out, fd, true);
+      return 0;
+    },
     // stdout/stderr say they are terminals (a character device that cannot seek), so libc line-buffers them and each line reaches the log when it is printed
     fd_fdstat_get(fd, buf) {
-      if (fd > 2) return EBADF;
       const d = dv();
+      if (fd === 3 || open.has(fd)) {                       // the preopened directory, or a file of it: everything is allowed (it is read-only anyway)
+        d.setUint8(buf, fd === 3 ? 3 : 4); d.setUint8(buf + 1, 0); d.setUint16(buf + 2, 0, true);
+        d.setBigUint64(buf + 8, 0x1fffffffn, true); d.setBigUint64(buf + 16, 0x1fffffffn, true);
+        return 0;
+      }
+      if (fd > 2) return EBADF;
       d.setUint8(buf, 2); d.setUint8(buf + 1, 0); d.setUint16(buf + 2, 0, true);
       d.setBigUint64(buf + 8, 1n << 6n, true); d.setBigUint64(buf + 16, 0n, true);
       return 0;
     },
-    fd_prestat_get: () => EBADF, fd_prestat_dir_name: () => EBADF, path_open: () => 44,
     environ_sizes_get(c, s) { dv().setUint32(c, 0, true); dv().setUint32(s, 0, true); return 0; }, environ_get: () => 0,
     args_sizes_get(c, s) { dv().setUint32(c, 0, true); dv().setUint32(s, 0, true); return 0; }, args_get: () => 0,
     clock_time_get(id, prec, out) { dv().setBigUint64(out, BigInt(Math.round(performance.now() * 1e6)), true); return 0; },
     random_get(p, n) { crypto.getRandomValues(new Uint8Array(memory().buffer, p, n)); return 0; },
     proc_exit(code) { exit(code); },
   };
-  return new Proxy(f, { get: (t, k) => (k in t ? t[k] : () => ENOSYS) });
+  return new Proxy(f, { get: (t, k) => {
+    const fn = k in t ? t[k] : () => ENOSYS;
+    if (!globalThis.PROWL_TRACE) return fn;
+    return (...a) => { const r = fn(...a); console.log("wasi " + String(k) + "(" + a.map(String).join(",") + ") = " + r); return r; };
+  } });
 }
 
-export async function startProwl({ wasm, canvas, log = console.log, manual = false }) {
+export async function startProwl({ wasm, canvas, log = console.log, manual = false, files = [] }) {
   let mem = null;
+  const fs = {};
+  for (const name of files) {
+    const r = await fetch(name);
+    if (!r.ok) throw new Error("cannot fetch " + name);
+    fs[name] = new Uint8Array(await r.arrayBuffer());
+  }
   const memory = () => mem;
+  let inst = null;
+  const jit = { compiled: 0, refused: 0 };
   const imports = {
-    wasi_snapshot_preview1: makeWasi(memory, log, (c) => { throw new Error("exit " + c); }),
+    // DotNetAnywhere's compiler from CIL to wasm (a hybrid player): it hands over a small module for a hot method, which goes into the module's own function
+    // table. A page may only compile modules this way on the main thread when Chrome calls them small (4 KB), so a larger one is refused (-1) and that method
+    // stays interpreted: slower, never wrong.
+    dna: {
+      emit_wasm(ptr, len) {
+        try {
+          const bytes = new Uint8Array(inst.exports.memory.buffer, ptr, len).slice();
+          const m = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env: { memory: inst.exports.memory, table: inst.exports.__indirect_function_table } });
+          const table = inst.exports.__indirect_function_table, index = table.length;
+          table.grow(1);
+          table.set(index, m.exports.f);
+          jit.compiled++;
+          return index;
+        } catch (e) { jit.refused++; return -1; }
+      },
+    },
+    wasi_snapshot_preview1: makeWasi(memory, log, (c) => { throw new Error("exit " + c); }, fs),
     gfx: makeGfx(canvas, memory, log),
   };
   const { instance } = await WebAssembly.instantiateStreaming(fetch(wasm), imports);
+  inst = instance;
   const x = instance.exports;
   mem = x.memory;
   if (x._initialize) x._initialize();
-  const state = { frame: 0, exports: x, error: null };
+  const state = { frame: 0, exports: x, error: null, jit };
   const rc = x.prowl_init();
   if (rc !== 0) { state.error = "prowl_init returned " + rc; log(state.error); return state; }
   state.step = (n = 1) => { for (let i = 0; i < n; i++) { x.prowl_frame(); state.frame++; } return state.frame; };

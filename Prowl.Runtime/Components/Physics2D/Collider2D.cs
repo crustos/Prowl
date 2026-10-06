@@ -145,6 +145,12 @@ public abstract class Collider2D : MonoBehaviour, ICollider2DHost
 
     internal bool IsClaimed => _attachedRigidbody != null;
 
+    /// <summary>The native static body this collider owns while it has no rigidbody, else 0. Terrain chunks build their shapes on it.</summary>
+    internal uint OwnBodyHandle => _ownBody;
+
+    /// <summary>This collider's index in the simulation's collider registry (what shapes and contact events name), or -1.</summary>
+    internal int RegistryIndex => _index;
+
     /// <summary>Builds this collider's native shapes. <paramref name="body"/> is the body they belong to.</summary>
     private protected abstract void CreateShapes(uint body, ShapeSpec2D spec, List<uint> shapes);
 

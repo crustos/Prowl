@@ -24,6 +24,7 @@ const args = process.argv.slice(2);
 const dir = path.resolve(args[0] || ".");
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const frames = parseInt(opt("--frames", "240"), 10), tol = parseInt(opt("--tol", "8"), 10);
+const gfxOpt = opt("--gfx", "auto");
 const ref = opt("--ref", null), shot = opt("--shot", null);
 
 const types = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm" };
@@ -34,15 +35,21 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(f).pipe(res);
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const url = `http://127.0.0.1:${server.address().port}/index.html?manual=1`;
+const url = `http://127.0.0.1:${server.address().port}/index.html?manual=1&gfx=${gfxOpt}`;
 
-const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
+// WebGL2 runs in headless Chromium on SwiftShader. WebGPU needs a Vulkan device (lavapipe will do: mesa-vulkan-drivers) and, for the canvas to present, a
+// real (headed) browser, which on a machine without a screen means xvfb-run (`build.py webtest` does that). PROWL_CHROMIUM names another browser binary.
+const useGpu = gfxOpt !== "webgl2" && !!process.env.DISPLAY;
+if (useGpu && !process.env.VK_ICD_FILENAMES && fs.existsSync("/usr/share/vulkan/icd.d/lvp_icd.json")) process.env.VK_ICD_FILENAMES = "/usr/share/vulkan/icd.d/lvp_icd.json";
+const browser = await chromium.launch(useGpu
+  ? { headless: false, executablePath: process.env.PROWL_CHROMIUM || undefined, args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan=native", "--use-angle=vulkan", "--disable-vulkan-surface", "--ignore-gpu-blocklist"] }
+  : { args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--enable-unsafe-webgpu"] });
 let code = 0;
 try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });   // (a headed browser asks for /favicon.ico)
   await page.goto(url);
   await page.waitForFunction("window.prowlReady === true || window.prowlFailed", null, { timeout: 30000 }).catch(() => {});
   const ok = await page.evaluate("!!window.prowl && !window.prowl.error");
@@ -52,11 +59,12 @@ try {
     process.exit(1);
   }
   await page.evaluate((n) => window.prowl.step(n), frames);
-  const out = await page.evaluate(() => {
-    const c = document.getElementById("screen"), gl = c.getContext("webgl2");
-    const w = c.width, h = c.height, px = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    return { w, h, px: Array.from(px), log: document.getElementById("log").textContent };
+  const backend = await page.evaluate("window.prowl.backend");
+  console.log(`renderer: ${backend}`);
+  if (gfxOpt !== "auto" && backend !== gfxOpt) { console.log(`FAIL: asked for ${gfxOpt}, the page used ${backend}`); process.exit(1); }
+  const out = await page.evaluate(async () => {
+    const r = await window.prowl.readPixels();      // RGBA, rows bottom to top, whichever API drew it
+    return { w: r.w, h: r.h, px: Array.from(r.rgba), log: document.getElementById("log").textContent };
   });
   console.log(out.log.trimEnd());
   const jit = await page.evaluate(() => window.prowl.jit);
@@ -84,7 +92,7 @@ try {
   }
   // and the page as a visitor sees it: no ?manual, so requestAnimationFrame drives the fixed 1/60 s steps
   const live = await browser.newPage();
-  await live.goto(url.replace("?manual=1", ""));
+  await live.goto(url.replace("?manual=1&", "?"));
   await live.waitForFunction("window.prowlReady === true", null, { timeout: 30000 });
   await live.waitForTimeout(1500);
   const n = await live.evaluate("window.prowl.frame");

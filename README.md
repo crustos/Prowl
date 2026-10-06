@@ -367,7 +367,14 @@ and open it). The module is a WASI reactor: the page loads it, supplies a small 
 same atlas and the same conversion of the batch as the desktop renderer, shared in `gfx2d_common.h`) and `Native/Gfx2D/web/prowl_web.js` does the GL, one instanced draw call over the same
 24-byte sprites. (Crust's own batch renderer is OpenGL ES 3.1, which WebGL2 is not, so the page has its own small shader: the sprite path of it, without lights or effects, which
 `gfx2d` does not use either.) `python3 build.py webtest` builds `Samples/Draw2D` both ways, runs the page in headless Chromium (SwiftShader), steps 240 frames and compares the canvas with the native frame:
-the largest difference is one level of 255 (two software rasterisers rounding differently). Not combined with `--dna` yet, and no input, audio or window sizing: the canvas is fixed at the size the game asks `GFX.Init` for.
+the largest difference is one level of 255 (two software rasterisers rounding differently). No input, audio or window sizing yet: the canvas is fixed at the size the game asks `GFX.Init` for.
+
+**The web with managed scripts: `--web --dna`.** The same page can run a hybrid game (`Samples/DrawScript2D`: Draw2D with a lambda and a `try`/`catch` in a script, `// dna` in the file): the wasm module has
+DotNetAnywhere linked in, the page fetches `player.managed.dll` and `corlib.dll` and gives the module a small read-only file system of them (the WASI shim in `prowl_web.js`), and the page's
+`Init`/`Frame` are called through the runtime where the game class is managed (directly where it stayed native). The page also provides `dna.emit_wasm`, so DotNetAnywhere's wasm JIT works there; Chrome compiles
+only small modules on the main thread, so a larger method is refused and stays interpreted. Native code can hold the managed scripts but cannot take one returned by a managed method, so a game that is
+native (`[Native]`, with a marker class of its own, as in the sample) adds scripts with `Scripts.AttachName(node)`, which returns nothing, instead of `Scripts.AddName(node)`.
+`python3 build.py webtest` runs both samples, and the picture of each page matches the native one.
 
 **What it does not have yet:** a native window (the web page presents), the renderer's lights and sprite effects (it has them; no component feeds them), scene files (a game builds its scene in code), input, audio, joints,
 and anything but Linux x86-64 (the native archives are built for the machine they are built on).

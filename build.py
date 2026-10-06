@@ -236,13 +236,15 @@ def cmd_gfx(a):
 
 
 def cmd_webtest(a):
-    """Samples/Draw2D as a native player (the reference frame) and as a page, which headless Chromium runs and compares with it. Needs node, Playwright with
-    Chromium, and what `gfx` and `player --web` need."""
+    """Samples/Draw2D and Samples/DrawScript2D (the same game, with managed scripts: --dna) each as a native player (the reference frame) and as a page, which
+    headless Chromium runs and compares with it. Needs node, Playwright with Chromium, and what `gfx` and `player --web` need."""
     cmd_gfx(a)
-    run([sys.executable, PLAYER_BUILD, os.path.join("Samples", "Draw2D"), "--run"], cwd=ROOT)
-    run([sys.executable, PLAYER_BUILD, os.path.join("Samples", "Draw2D"), "--web"], cwd=ROOT)
-    run(["node", os.path.join(ROOT, "tools", "web_test.mjs"), os.path.join(ROOT, "Build", "Player", "Draw2D-web"),
-         "--ref", os.path.join(ROOT, "Build", "Player", "Draw2D", "frame_0000.ppm")], cwd=ROOT)
+    for n in ("Draw2D", "DrawScript2D"):
+        say("web test: " + n)
+        run([sys.executable, PLAYER_BUILD, os.path.join("Samples", n), "--run"], cwd=ROOT)
+        run([sys.executable, PLAYER_BUILD, os.path.join("Samples", n), "--web"], cwd=ROOT)
+        run(["node", os.path.join(ROOT, "tools", "web_test.mjs"), os.path.join(ROOT, "Build", "Player", n + "-web"),
+             "--ref", os.path.join(ROOT, "Build", "Player", n, "frame_0000.ppm")], cwd=ROOT)
 
 
 PLAYER_BUILD = os.path.join(ROOT, "tools", "ccsharp", "player_build.py")

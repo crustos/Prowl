@@ -14,17 +14,35 @@
 
 #include "gfx2d.h"
 #include "gfx2d_common.h"
+#include "gfx2d_ui.h"
 
 #define WEB_IMPORT(name) __attribute__((import_module("gfx"), import_name(#name)))
 WEB_IMPORT(gfx_web_init) int gfx_web_init(int w, int h, const unsigned char *atlas, int side, const unsigned short *rects, int sprites);
 WEB_IMPORT(gfx_web_draw) void gfx_web_draw(const void *sprites, int n, float l, float b, float r, float t, float cr, float cg, float cb);
 WEB_IMPORT(gfx_web_read) void gfx_web_read(unsigned char *rgba);
 WEB_IMPORT(gfx_web_shutdown) void gfx_web_shutdown(void);
+/* the UI layer (gfx2d_ui.c): textures are given whole (the page copies from `rgba`), meshes and the clip are drawn at once over the frame so far, and the page's
+ * input is taken one event at a time: gfx_web_poll writes five ints at `out5` and returns 1, or returns 0 when there is none */
+WEB_IMPORT(gfx_web_texture_create) void gfx_web_texture_create(int id, int w, int h, int filter, const unsigned char *rgba);
+WEB_IMPORT(gfx_web_texture_update) void gfx_web_texture_update(int id, int x, int y, int w, int h, const unsigned char *image);
+WEB_IMPORT(gfx_web_texture_free) void gfx_web_texture_free(int id);
+WEB_IMPORT(gfx_web_triangles) void gfx_web_triangles(const float *vertices, int count, int texture);
+WEB_IMPORT(gfx_web_clip) void gfx_web_clip(int x0, int y0, int x1, int y1);
+WEB_IMPORT(gfx_web_poll) int gfx_web_poll(int *out5);
 
 static int g_w, g_h, g_ready, g_dirty, g_drawn;
 static float g_cx, g_cy, g_half = 5.f, g_bgr, g_bgg, g_bgb;
 static unsigned char *g_pixels;
 static EngineGpuSprite g_sprites[GFX_MAX_SPRITES];
+
+static void ui_triangles(const float *v, int n, int t) { gfx_web_triangles(v, n, t); g_dirty = 1; }
+static void ui_poll(void)
+{
+    int e[5];
+    while (gfx_web_poll(e))
+        gfxui_push(e[0], e[1], e[2], e[3], e[4]);
+}
+static const GfxUiBackend g_ui = { gfx_web_texture_create, gfx_web_texture_update, gfx_web_texture_free, ui_triangles, gfx_web_clip, ui_poll };
 
 int gfx_init(int width, int height)
 {
@@ -37,6 +55,7 @@ int gfx_init(int width, int height)
     g_w = width;
     g_h = height;
     g_ready = 1;
+    gfxui_attach(&g_ui, width, height);
     return 1;
 }
 
@@ -44,6 +63,7 @@ void gfx_shutdown(void)
 {
     if (!g_ready)
         return;
+    gfxui_detach();
     gfx_web_shutdown();
     free(g_pixels);
     g_pixels = 0;
@@ -65,6 +85,9 @@ int gfx_draw(const float *sprites, int count)
         count = 0;
     if (count > GFX_MAX_SPRITES)
         count = GFX_MAX_SPRITES;
+    if (sprites == NULL)
+        count = 0;
+    gfxui_new_frame();
     memcpy(g_batch, sprites, (size_t)count * GFX_SPRITE_FLOATS * sizeof(float));
     g_count = count;
     n = gfx_collect_sprites(g_sprites, GFX_MAX_SPRITES);
@@ -117,5 +140,9 @@ int gfx_stat(int which)
         return g_count;
     if (which == GFX_STAT_BYTES_UPLOADED)
         return g_drawn * (int)sizeof(EngineGpuSprite);    /* every frame uploads the whole batch */
+    if (which == GFX_STAT_VERTICES)
+        return gfxui_vertices();
+    if (which == GFX_STAT_EVENTS_DROPPED)
+        return gfxui_events_dropped();
     return 0;
 }

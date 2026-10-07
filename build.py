@@ -208,6 +208,9 @@ def cmd_ccsharp(a):
     run([sys.executable, os.path.join(ROOT, "tools", "ccsharp", "ccsharp_scan.py"), "conformance"])
 
 
+GFX_DESKTOP_SOURCES = ["gfx2d.c", "gfx2d_ui.c", "gfx2d_font.c", "gfx2d_font_data.c"]
+
+
 def cmd_gfx(a):
     """The 2D renderer (Native/Gfx2D) for this machine: libgfx2d_static.a (linked into a player that draws) and libgfx2d.so (what the .NET reference loads).
     It includes Crust's GLES 3.1 batch renderer from ../crust, and needs the EGL / GLES headers (apt install libegl-dev libgles-dev)."""
@@ -221,14 +224,17 @@ def cmd_gfx(a):
     say("native 2D renderer: Native/Gfx2D (%s)" % rid())
     cc = os.environ.get("CC") or "cc"
     flags = ["-O2", "-ffp-contract=off", "-w", "-fPIC", "-I", src, "-I", batch]
-    obj = os.path.join(bdir, "gfx2d.o")
-    run([cc] + flags + ["-c", os.path.join(src, "gfx2d.c"), "-o", obj])
+    objs = []
+    for name in GFX_DESKTOP_SOURCES:      # gfx2d.c is the renderer; the others are the UI layer's (textures, clip, input, fonts) and are the same C on a page
+        obj = os.path.join(bdir, name[:-2] + ".o")
+        run([cc] + flags + ["-c", os.path.join(src, name), "-o", obj])
+        objs.append(obj)
     static = os.path.join(bdir, "libgfx2d_static.a")
     if os.path.exists(static):
         os.remove(static)
-    run(["ar", "rcs", static, obj])
+    run(["ar", "rcs", static] + objs)
     so = os.path.join(bdir, "libgfx2d.so")
-    run([cc, "-shared", "-o", so, obj, "-lEGL", "-lGLESv2", "-lm"])
+    run([cc, "-shared", "-o", so] + objs + ["-lEGL", "-lGLESv2", "-lm"])
     dest = os.path.join(ROOT, "Libraries", rid(), "native")
     os.makedirs(dest, exist_ok=True)
     shutil.copy2(so, dest)

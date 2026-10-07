@@ -64,6 +64,7 @@ def rt(*parts):
 FEATURES = {
     "terrain": r"\b(PixelTerrain2D|StampShape|PixelChunk|PixelRange|PixelColumn|PixelRectMerge|PixelQuadTree|PixelChainTrace)\b",
     "destruction": r"\b(Shatter2D|Fracturer|PolySet|ExplodeOptions)\b",
+    "ui": r"\b(UIText|Prowl\.Core2D\.UI)\b",
 }
 
 

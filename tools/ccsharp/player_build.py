@@ -49,7 +49,7 @@ def uses_gfx(files):
     for path in files:
         with open(path, encoding="utf-8-sig") as f:
             text = re.sub(r"//[^\n]*", "", f.read())
-        if re.search(r"Prowl\.Native\.Gfx2D|\bGFX\.", text):
+        if re.search(r"Prowl\.Native\.Gfx2D|\bGFX\.|\bUIText\b|Prowl\.Core2D\.UI", text):
             return True
     return False
 

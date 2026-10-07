@@ -68,6 +68,7 @@ use("box2d")
 SCALARS = {
     "int": ("int", "int"), "int32_t": ("int", "int"), "uint32_t": ("uint", "uint"), "float": ("float", "float"),
     "intptr_t": ("long", "nint"), "void": ("void", "void"),
+    "uint8_t": ("byte", "byte"),     # pixels: gfx2d textures (a byte[] in C#)
 }
 KEYWORDS = {"params", "object", "string", "base", "ref", "out", "in", "event", "lock", "checked", "fixed", "default", "operator", "namespace",
             "char", "byte", "decimal", "delegate", "is", "as", "new", "this", "class", "struct"}

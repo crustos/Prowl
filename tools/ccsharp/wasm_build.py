@@ -18,6 +18,11 @@ PROWL = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(PROWL, "Build", "Native", "wasm32")
 
 
+def gfx_web_sources(gfx_dir):
+    """The renderer for a page: gfx2d_web.c, and the UI layer (textures, clip, input, fonts) that is the same C as on the desktop."""
+    return [os.path.join(gfx_dir, f) for f in ("gfx2d_web.c", "gfx2d_ui.c", "gfx2d_font.c", "gfx2d_font_data.c")]
+
+
 def _ccs2c():
     sys.path.insert(0, os.path.join(os.environ.get("CCSHARP_HOME") or os.path.join(os.path.dirname(PROWL), "CCSharp"), "crust"))
     import ccs2c
@@ -200,7 +205,7 @@ def link_web(out_dir, c_file, main_class, name="prowl2d-player"):
     module = os.path.join(out_dir, name + ".wasm")
     if os.path.exists(module):
         os.remove(module)
-    cmd = ([c.wasm_compiler()] + _cflags(c) + ["-I.", "-I" + gfx_dir, "-I" + os.path.join(PROWL, "Native", "Box2D"), "-mexec-model=reactor", "-o", module, web_c, os.path.join(gfx_dir, "gfx2d_web.c"),
+    cmd = ([c.wasm_compiler()] + _cflags(c) + ["-I.", "-I" + gfx_dir, "-I" + os.path.join(PROWL, "Native", "Box2D"), "-mexec-model=reactor", "-o", module, web_c, *gfx_web_sources(gfx_dir),
            "-L" + natives, "-lprowl_box2d_static", "-lbox2d", "-lm"] + ["-fuse-ld=lld", "-Wl,-z,stack-size=8388608", "-Wl,--export=prowl_init", "-Wl,--export=prowl_frame"])
     r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
     if r.returncode != 0:
@@ -255,7 +260,7 @@ def _link_hybrid_web(c, home, bdir, lib, out_dir, c_dir, main_class, name):
     if os.path.exists(module):
         os.remove(module)
     cmd = ([c.wasm_compiler()] + _cflags(c) + ["-I.", "-I" + gfx_dir, "-I" + os.path.join(PROWL, "Native", "Box2D"), "-I" + os.path.join(home, "native", "src"),
-           "-mexec-model=reactor", "-o", module, "player.web.c", "player.bridge.web.c", os.path.join(gfx_dir, "gfx2d_web.c"), lib,
+           "-mexec-model=reactor", "-o", module, "player.web.c", "player.bridge.web.c", *gfx_web_sources(gfx_dir), lib,
            "-L" + natives, "-lprowl_box2d_static", "-lbox2d", "-lm"]
            + ["-fuse-ld=lld", "-Wl,-z,stack-size=8388608", "-Wl,--export=prowl_init", "-Wl,--export=prowl_frame", "-Wl,--export-table", "-Wl,--growable-table"])
     r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)

@@ -187,4 +187,16 @@ GFX_API int gfx_font_glyph( int index, int codepoint, GFX_OUT_ARR float *out9 );
 // (and counts it in GFX_STAT_EVENTS_DROPPED). An unknown type or one before gfx_init is refused (0).
 GFX_API int gfx_inject_event( int type, int a, int b, int c, int d );
 
+// ---- the window (desktop only; gfx2d_sdl.inc) ------------------------------------------------------------------------------------------------
+//
+// The renderer draws offscreen as always; a window only SHOWS the finished frame. gfx_window_open (after gfx_init) makes an SDL2 window the size of the
+// picture, resizable (the picture is letterboxed, never stretched); `visible` 0 makes it hidden. gfx_present reads the frame back and shows it. From then
+// on the window's mouse, keyboard, text, focus and close events arrive through gfx_poll_event, in picture pixels, as if gfx_inject_event had made them.
+// All three return 0 in a build without SDL (-DGFX_SDL) or with no display, and then nothing else here has an effect: the game runs headless as before.
+// Call them from the thread that called gfx_init (SDL and GL both want one thread).
+GFX_API int gfx_window_open( int visible );
+GFX_API int gfx_window_is_open( void );
+GFX_API void gfx_window_close( void );
+GFX_API int gfx_present( void );
+
 #endif

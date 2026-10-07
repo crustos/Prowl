@@ -206,7 +206,10 @@ static void ui_clip(int x0, int y0, int x1, int y1)
     glScissor(x0, g_h - y1, x1 - x0, y1 - y0); /* GL counts rows from the bottom */
 }
 
-static const GfxUiBackend g_ui = { ui_texture_create, ui_texture_update, ui_texture_free, ui_triangles, ui_clip, 0 };
+static void sync(void); /* defined below; the window needs it to show a finished frame */
+#include "gfx2d_sdl.inc" /* the desktop window (only with -DGFX_SDL; otherwise stubs): gfx_window_open, gfx_present, and win_poll, which feeds the event queue */
+
+static const GfxUiBackend g_ui = { ui_texture_create, ui_texture_update, ui_texture_free, ui_triangles, ui_clip, win_poll };
 
 int gfx_init(int width, int height)
 {
@@ -251,6 +254,7 @@ void gfx_shutdown(void)
 {
     if (!g_ready)
         return;
+    gfx_window_close();
     gfxui_detach();
     free(g_pixels);
     g_pixels = 0;

@@ -42,8 +42,33 @@ void main() {
     frag = vec4(t.rgb * v_color.rgb, t.a * v_color.a);
 }`;
 
+// The UI layer's meshes (gfx_triangles): x, y, u, v, r, g, b, a per vertex, a texture, the sprite batch's view.
+const MESH_VERT = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec2 a_uv;
+layout(location = 2) in vec4 a_color;
+uniform vec4 u_view;
+out vec2 v_uv;
+out vec4 v_color;
+void main() {
+  gl_Position = vec4(2.0 * (a_pos - u_view.xy) / (u_view.zw - u_view.xy) - 1.0, 0.0, 1.0);
+  v_uv = a_uv;
+  v_color = a_color;
+}`;
+const MESH_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+in vec4 v_color;
+layout(location = 0) out vec4 frag;
+void main() { frag = texture(u_tex, v_uv) * v_color; }`;
+const MESH_BYTES = 32, MAX_MESH_VERTICES = 65536;
+
 function makeGfxGL(canvas, memory, log) {
   let gl = null, prog, vbo, vao, atlas, uView, uRects, w = 0, h = 0, rects = null;
+  let mprog, mvao, mvbo, uMView, uMTex, view = [0, 0, 1, 1];
+  const tex = [];
   const mem8 = () => new Uint8Array(memory().buffer);
   function shader(type, src) {
     const s = gl.createShader(type);
@@ -84,10 +109,27 @@ function makeGfxGL(canvas, memory, log) {
         gl.enableVertexAttribArray(3); gl.vertexAttribIPointer(3, 1, gl.SHORT, 24, 14);
         gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 4, gl.UNSIGNED_BYTE, true, 24, 16);
         for (let i = 0; i < 5; i++) gl.vertexAttribDivisor(i, 1);
+        // the UI layer's mesh program
+        mprog = gl.createProgram();
+        gl.attachShader(mprog, shader(gl.VERTEX_SHADER, MESH_VERT));
+        gl.attachShader(mprog, shader(gl.FRAGMENT_SHADER, MESH_FRAG));
+        gl.linkProgram(mprog);
+        if (!gl.getProgramParameter(mprog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(mprog));
+        uMView = gl.getUniformLocation(mprog, "u_view");
+        uMTex = gl.getUniformLocation(mprog, "u_tex");
+        mvao = gl.createVertexArray(); gl.bindVertexArray(mvao);
+        mvbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, mvbo);
+        gl.bufferData(gl.ARRAY_BUFFER, MAX_MESH_VERTICES * MESH_BYTES, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, MESH_BYTES, 0);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, MESH_BYTES, 8);
+        gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, MESH_BYTES, 16);
+        gl.bindVertexArray(null);
         return 1;
       } catch (e) { log("gfx_web_init: " + e.message); return 0; }
     },
     gfx_web_draw(ptr, n, l, b, r, t, cr, cg, cb) {
+      view = [l, b, r, t];
+      gl.disable(gl.SCISSOR_TEST);                       // a new frame has no clip, and the clear must not be clipped
       gl.viewport(0, 0, w, h);
       gl.clearColor(cr, cg, cb, 1); gl.clear(gl.COLOR_BUFFER_BIT);
       if (n <= 0) return;
@@ -105,6 +147,53 @@ function makeGfxGL(canvas, memory, log) {
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(memory().buffer, ptr, w * h * 4));
     },
     gfx_web_shutdown() { gl = null; },
+    // ---- the UI layer: textures, meshes over the frame, the clip (gfx2d_ui.c has the rest) ----
+    gfx_web_texture_create(id, tw, th, filter, ptr) {
+      const t = gl.createTexture();
+      const f = filter === 1 ? gl.LINEAR : gl.NEAREST;
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(memory().buffer, ptr, tw * th * 4));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      tex[id] = { name: t, w: tw, h: th };
+    },
+    gfx_web_texture_update(id, x, y, rw, rh, ptr) {
+      const t = tex[id];
+      if (!t) return;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, t.name);
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, t.w);         // `ptr` is the whole image: read the rectangle out of it in place
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, rw, rh, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(memory().buffer, ptr, t.w * t.h * 4));
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    },
+    gfx_web_texture_free(id) { if (tex[id]) { gl.deleteTexture(tex[id].name); tex[id] = null; } },
+    gfx_web_triangles(ptr, count, texture) {
+      gl.viewport(0, 0, w, h);
+      gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+      gl.useProgram(mprog);
+      gl.uniform4f(uMView, view[0], view[1], view[2], view[3]);
+      gl.uniform1i(uMTex, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, (tex[texture] || tex[0]).name);
+      gl.bindVertexArray(mvao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, mvbo);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Uint8Array(memory().buffer, ptr, count * MESH_BYTES));
+      gl.drawArrays(gl.TRIANGLES, 0, count);
+      gl.bindVertexArray(null);
+    },
+    gfx_web_clip(x0, y0, x1, y1) {
+      if (x0 === 0 && y0 === 0 && x1 === w && y1 === h) { gl.disable(gl.SCISSOR_TEST); return; }
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(x0, h - y1, x1 - x0, y1 - y0);          // GL counts rows from the bottom
+    },
     read() { const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); return { w, h, rgba: px }; },
   };
 }
@@ -147,6 +236,20 @@ struct VOut { @builtin(position) p: vec4f, @location(0) color: vec4f, @location(
 @fragment fn fs(i: VOut) -> @location(0) vec4f {
   let t = textureSampleLevel(atlas, samp, i.uv, 0.0);
   return vec4f(t.rgb * i.color.rgb, t.a * i.color.a);
+}
+
+// the UI layer's meshes: x, y, u, v, r, g, b, a per vertex, the texture of the bind group (the sprite bind group's atlas is only one of them)
+struct MIn { @location(0) pos: vec2f, @location(1) uv: vec2f, @location(2) color: vec4f };
+struct MOut { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) color: vec4f };
+@vertex fn vs_mesh(i: MIn) -> MOut {
+  var o: MOut;
+  o.p = vec4f(2.0 * (i.pos - u.view.xy) / (u.view.zw - u.view.xy) - 1.0, 0.0, 1.0);
+  o.uv = i.uv;
+  o.color = i.color;
+  return o;
+}
+@fragment fn fs_mesh(i: MOut) -> @location(0) vec4f {
+  return textureSampleLevel(atlas, samp, i.uv, 0.0) * i.color;
 }`;
 
 // `target` onto the canvas: a pass that loads each pixel (a texture-to-texture copy into the canvas's own texture is not something every implementation takes)
@@ -162,7 +265,7 @@ const BLIT = `
 // null when this browser has no usable WebGPU (nothing has touched the canvas then, so WebGL2 can still take it).
 async function makeGfxGPU(canvas, memory, log) {
   if (!globalThis.navigator || !navigator.gpu) return null;
-  let adapter, device, ctx, pipeline, blitPipe, blitLayout, layout, sampler, spriteBuf, uniBuf;
+  let adapter, device, ctx, pipeline, meshPipe, blitPipe, blitLayout, layout, sampler, samplers, spriteBuf, meshBuf, uniBuf;
   const FORMAT = "rgba8unorm";
   try {
     adapter = await navigator.gpu.requestAdapter();     // kept in this closure: if it is collected, Chrome tears the whole instance down
@@ -194,6 +297,20 @@ async function makeGfxGPU(canvas, memory, log) {
         alpha: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" } } }] },
       primitive: { topology: "triangle-strip" },
     });
+    meshPipe = await device.createRenderPipelineAsync({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+      vertex: { module, entryPoint: "vs_mesh", buffers: [{
+        arrayStride: MESH_BYTES, stepMode: "vertex",
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x2" },
+          { shaderLocation: 1, offset: 8, format: "float32x2" },
+          { shaderLocation: 2, offset: 16, format: "float32x4" },
+        ] }] },
+      fragment: { module, entryPoint: "fs_mesh", targets: [{ format: FORMAT, blend: {
+        color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+        alpha: { srcFactor: "zero", dstFactor: "one", operation: "add" } } }] },   // the picture's own alpha stays as the background made it, as on the desktop
+      primitive: { topology: "triangle-list" },
+    });
     const bmod = device.createShaderModule({ code: BLIT });
     blitLayout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }] });
     blitPipe = await device.createRenderPipelineAsync({
@@ -201,6 +318,9 @@ async function makeGfxGPU(canvas, memory, log) {
       vertex: { module: bmod, entryPoint: "vs" }, fragment: { module: bmod, entryPoint: "fs", targets: [{ format: FORMAT }] },
       primitive: { topology: "triangle-list" } });
     sampler = device.createSampler({ magFilter: "nearest", minFilter: "nearest", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge" });
+    samplers = [0, 1].map((f) => device.createSampler({ magFilter: f ? "linear" : "nearest", minFilter: f ? "linear" : "nearest",
+                                                         addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge" }));
+    meshBuf = device.createBuffer({ size: MAX_MESH_VERTICES * MESH_BYTES, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     spriteBuf = device.createBuffer({ size: 8192 * 24, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     uniBuf = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     ctx = canvas.getContext("webgpu");
@@ -208,6 +328,8 @@ async function makeGfxGPU(canvas, memory, log) {
   } catch (e) { log("webgpu unavailable: " + e.message); return null; }
 
   let w = 0, h = 0, rects, bind, blitBind, target, bpr = 0, stage, cache = null, reading = false, wantRead = false;
+  const tex = [];
+  let clipRect = null, hidden = false;     // the UI layer's clip (pixels from the top left; an empty one hides what follows)
   const mem8 = () => new Uint8Array(memory().buffer);
 
   // `target` rows copied into `buf` (mapped by the caller), top to bottom -> an RGBA array, rows bottom to top
@@ -217,6 +339,18 @@ async function makeGfxGPU(canvas, memory, log) {
     return out;
   };
   const copyOut = (enc, buf) => enc.copyTextureToBuffer({ texture: target }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
+  // `target` onto the canvas, a read-back of it if the game has asked for pixels, and the commands to the GPU
+  const finish = (enc) => {
+    const out = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "store" }] });
+    out.setPipeline(blitPipe); out.setBindGroup(0, blitBind); out.draw(3); out.end();
+    const grab = wantRead && !reading;
+    if (grab) copyOut(enc, stage);
+    device.queue.submit([enc.finish()]);
+    if (grab) {
+      reading = true;
+      stage.mapAsync(GPUMapMode.READ).then(() => { cache = unpack(new Uint8Array(stage.getMappedRange())); stage.unmap(); reading = false; }, () => { reading = false; });
+    }
+  };
 
   const imports = {
     gfx_web_init(width, height, atlasPtr, side, rectsPtr, sprites) {
@@ -246,15 +380,38 @@ async function makeGfxGPU(canvas, memory, log) {
       const pass = enc.beginRenderPass({ colorAttachments: [{ view: target.createView(), clearValue: { r: cr, g: cg, b: cb, a: 1 }, loadOp: "clear", storeOp: "store" }] });
       if (n > 0) { pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.setVertexBuffer(0, spriteBuf); pass.draw(4, n); }
       pass.end();
-      const out = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "store" }] });
-      out.setPipeline(blitPipe); out.setBindGroup(0, blitBind); out.draw(3); out.end();
-      const grab = wantRead && !reading;
-      if (grab) copyOut(enc, stage);
-      device.queue.submit([enc.finish()]);
-      if (grab) {
-        reading = true;
-        stage.mapAsync(GPUMapMode.READ).then(() => { cache = unpack(new Uint8Array(stage.getMappedRange())); stage.unmap(); reading = false; }, () => { reading = false; });
-      }
+      clipRect = null; hidden = false;                  // a new frame has no clip
+      finish(enc);
+    },
+    gfx_web_texture_create(id, tw, th, filter, ptr) {
+      const texture = device.createTexture({ size: [tw, th], format: FORMAT, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      device.queue.writeTexture({ texture }, new Uint8Array(memory().buffer, ptr, tw * th * 4), { bytesPerRow: tw * 4 }, [tw, th]);
+      const tbind = device.createBindGroup({ layout, entries: [
+        { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: texture.createView() }, { binding: 2, resource: samplers[filter === 1 ? 1 : 0] } ] });
+      tex[id] = { texture, w: tw, h: th, bind: tbind };
+    },
+    gfx_web_texture_update(id, x, y, rw, rh, ptr) {
+      const t = tex[id];
+      if (!t) return;
+      // `ptr` is the whole image: the layout's offset and row pitch pick the rectangle out of it
+      device.queue.writeTexture({ texture: t.texture, origin: [x, y] }, new Uint8Array(memory().buffer, ptr, t.w * t.h * 4),
+                                { offset: (y * t.w + x) * 4, bytesPerRow: t.w * 4 }, [rw, rh]);
+    },
+    gfx_web_texture_free(id) { if (tex[id]) { tex[id].texture.destroy(); tex[id] = null; } },
+    // meshes go over the picture so far, one pass each (`loadOp: "load"`), and the canvas gets the result at once
+    gfx_web_triangles(ptr, count, texture) {
+      if (hidden) return;
+      device.queue.writeBuffer(meshBuf, 0, memory().buffer, ptr, count * MESH_BYTES);
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginRenderPass({ colorAttachments: [{ view: target.createView(), loadOp: "load", storeOp: "store" }] });
+      if (clipRect) pass.setScissorRect(clipRect[0], clipRect[1], clipRect[2], clipRect[3]);
+      pass.setPipeline(meshPipe); pass.setBindGroup(0, (tex[texture] || tex[0]).bind); pass.setVertexBuffer(0, meshBuf); pass.draw(count);
+      pass.end();
+      finish(enc);
+    },
+    gfx_web_clip(x0, y0, x1, y1) {
+      hidden = x1 <= x0 || y1 <= y0;                     // WebGPU has no zero-size scissor rectangle: nothing is drawn instead
+      clipRect = (x0 === 0 && y0 === 0 && x1 === w && y1 === h) || hidden ? null : [x0, y0, x1 - x0, y1 - y0];   // framebuffer rows count from the top, as the clip does
     },
     // A synchronous read cannot wait for the GPU. Once a game has asked for pixels (gfx_pixel, gfx_frame_hash) the backend reads each frame back in the
     // background, and this hands over the newest picture that has arrived: a frame or more behind, black until the first one comes. The exact picture
@@ -381,6 +538,67 @@ function makeWasi(memory, log, exit, files) {
   } });
 }
 
+// ---- input -------------------------------------------------------------------------------------------------------------------------------------------
+// The page's events as the five ints gfx2d.h describes ([type, a, b, c, d]; positions in canvas pixels, y from the top), queued here until the module asks
+// for them with gfx_web_poll. Keys are named by what they are (event.code), not by the text they make, as in gfx2d.h; the text is its own event.
+const KEYS = {
+  Escape: 256, Enter: 257, NumpadEnter: 257, Tab: 258, Backspace: 259, Insert: 260, Delete: 261, ArrowRight: 262, ArrowLeft: 263, ArrowDown: 264, ArrowUp: 265,
+  PageUp: 266, PageDown: 267, Home: 268, End: 269, ShiftLeft: 340, ControlLeft: 341, AltLeft: 342, MetaLeft: 343, ShiftRight: 344, ControlRight: 345,
+  AltRight: 346, MetaRight: 347, Space: 32, Minus: 45, Equal: 61, Comma: 44, Period: 46, Slash: 47, Semicolon: 59, Quote: 39, Backquote: 96,
+  BracketLeft: 91, BracketRight: 93, Backslash: 92,
+};
+function keyOf(e) {
+  const c = e.code;
+  if (KEYS[c] !== undefined) return KEYS[c];
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(c))) return m[1].charCodeAt(0);
+  if ((m = /^Digit([0-9])$/.exec(c))) return m[1].charCodeAt(0);
+  if ((m = /^F([0-9]{1,2})$/.exec(c)) && +m[1] >= 1 && +m[1] <= 12) return 290 + (+m[1]) - 1;
+  return 0;
+}
+function makeInput(canvas, memory) {
+  const q = [];
+  const mods = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+  const pos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return [Math.floor((e.clientX - r.left) * canvas.width / r.width), Math.floor((e.clientY - r.top) * canvas.height / r.height)];
+  };
+  canvas.tabIndex = 0;                                       // so it can have the keyboard
+  canvas.style.outline = "none";
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("pointermove", (e) => { const [x, y] = pos(e); q.push([1, x, y, 0, mods(e)]); });
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.focus();
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
+    const [x, y] = pos(e); q.push([2, x, y, e.button === 1 ? 1 : e.button === 2 ? 2 : 0, mods(e)]);
+  });
+  canvas.addEventListener("pointerup", (e) => { const [x, y] = pos(e); q.push([3, x, y, e.button === 1 ? 1 : e.button === 2 ? 2 : 0, mods(e)]); });
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const k = e.deltaMode === 0 ? 1 / 100 : e.deltaMode === 1 ? 1 / 3 : 1;     // pixels, lines or pages -> notches (a notch is about 100 pixels, 3 lines)
+    const [x, y] = pos(e);
+    q.push([4, x, y, Math.round(e.deltaX * k * 120), Math.round(-e.deltaY * k * 120)]);
+  }, { passive: false });
+  canvas.addEventListener("keydown", (e) => {
+    const k = keyOf(e);
+    if (k) { q.push([5, k, e.repeat ? 1 : 0, 0, mods(e)]); e.preventDefault(); }
+    const shortcut = e.metaKey || (e.ctrlKey && !e.altKey);
+    if (!shortcut && !e.isComposing && e.key && [...e.key].length === 1) q.push([7, e.key.codePointAt(0), 0, 0, 0]);
+  });
+  canvas.addEventListener("keyup", (e) => { const k = keyOf(e); if (k) { q.push([6, k, 0, 0, mods(e)]); e.preventDefault(); } });
+  canvas.addEventListener("focus", () => q.push([8, 1, 0, 0, 0]));
+  canvas.addEventListener("blur", () => q.push([8, 0, 0, 0, 0]));
+  return {
+    queue: q,
+    poll(ptr) {
+      const e = q.shift();
+      if (!e) return 0;
+      new Int32Array(memory().buffer, ptr, 5).set(e);
+      return 1;
+    },
+  };
+}
+
 export async function startProwl({ wasm, canvas, log = console.log, manual = false, files = [], gfx = "auto" }) {
   let mem = null;
   const fs = {};
@@ -394,6 +612,7 @@ export async function startProwl({ wasm, canvas, log = console.log, manual = fal
   if (gfx === "auto" || gfx === "webgpu") backend = await makeGfxGPU(canvas, memory, log);
   if (!backend && gfx === "webgpu") log("webgpu requested but not available here: using WebGL2");
   if (!backend) backend = glBackend(canvas, memory, log);
+  const input = makeInput(canvas, memory);
   let inst = null;
   const jit = { compiled: 0, refused: 0 };
   const imports = {
@@ -414,7 +633,7 @@ export async function startProwl({ wasm, canvas, log = console.log, manual = fal
       },
     },
     wasi_snapshot_preview1: makeWasi(memory, log, (c) => { throw new Error("exit " + c); }, fs),
-    gfx: backend.imports,
+    gfx: { ...backend.imports, gfx_web_poll: (ptr) => input.poll(ptr) },
   };
   const { instance } = await WebAssembly.instantiateStreaming(fetch(wasm), imports);
   inst = instance;

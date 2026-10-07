@@ -18,6 +18,7 @@ Commands (the default, with none, is `all`):
               add --wasm for a WebAssembly (wasm32-wasi) module run under node; --dna to let classes outside the C# subset run on DotNetAnywhere
               (GAME is a folder of .cs files with a static Main; tools/ccsharp/player_build.py has the details)
     gfx       build the 2D renderer (Native/Gfx2D) for this machine: needs the EGL/GLES headers and ../crust
+    so        build libprowl2d.so for the editor (prowl.py): the 2D engine as C plus the SDL2 window, one library for ctypes; [-- -o PATH] (default /tmp/libprowl2d.so)
     webtest   Samples/Draw2D as a native player and as a web page (WebGL2 and WebGPU) run in headless Chromium, and compare the two pictures
     samples   every folder of Samples/ (or the named ones), built as a player and compared with the same game on .NET: samples [NAME..] [--sanitize] [--wasm]
     check3d   does the 3D switch still hold? compiles with and without 3D and compares   (tools/check_physics3d.py)
@@ -241,6 +242,13 @@ def cmd_gfx(a):
     print("   built %s and %s; installed %s" % (static, so, os.path.join(dest, "libgfx2d.so")))
 
 
+def cmd_so(a):
+    """libprowl2d.so: Native/Engine2D/Engine.cs translated to C with the 2D runtime, plus the SDL2-windowed renderer and Box2D, in one shared library that the
+    editor (prowl.py) loads with ctypes. Arguments after `--` go to tools/prowl2d_so.py (-o PATH, --no-sdl). Needs the siblings (deps --ccsharp), `native`, a
+    .NET SDK for the translator, and libegl-dev libgles-dev libsdl2-dev."""
+    run([sys.executable, os.path.join(ROOT, "tools", "prowl2d_so.py")] + list(a.rest))
+
+
 def cmd_webtest(a):
     """Samples/Draw2D and Samples/DrawScript2D (the same game, with managed scripts: --dna) each as a native player (the reference frame) and as a page, which
     headless Chromium runs and compares with it. Needs node, Playwright with Chromium, and what `gfx` and `player --web` need."""
@@ -336,7 +344,7 @@ def cmd_clean(a):
 
 
 COMMANDS = {"all": cmd_all, "deps": cmd_deps, "native": cmd_native, "managed": cmd_managed, "test": cmd_test, "scan": cmd_scan,
-            "ccsharp": cmd_ccsharp, "gfx": cmd_gfx, "webtest": cmd_webtest, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
+            "ccsharp": cmd_ccsharp, "gfx": cmd_gfx, "so": cmd_so, "webtest": cmd_webtest, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
 
 
 def main():

@@ -15,6 +15,7 @@ SpriteRenderer2D, Renderer2D        a coloured box or disc on a node, and the dr
 MeshRenderer2D          a convex polygon with texture coordinates and a tint, and the triangle list of all of them a renderer is handed
 PolygonCollider2D       a convex collider of up to 8 points (Collider2D.Polygon)
 PixelTerrain2D          destructible terrain: a bitmap you can dig and build, with box or chain colliders (Feature "terrain")
+UI/UIText               text for the in-game UI over the renderer's baked fonts: measure, word-wrap, draw (Feature "ui"; see Native/Gfx2D/README.md)
 Shatter2D               breaks a node with a box or polygon collider into fragments, and pushes things away from a point (Feature "destruction")
 ```
 

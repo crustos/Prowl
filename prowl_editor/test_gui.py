@@ -274,6 +274,105 @@ class Files(Base):
             self.assertEqual((s.width, s.height), (5, 4))
             self.assertIs(self.studio.sprite, s)
 
+    def _unity_project(self, d):
+        from .test_core import RED, make_png, rgba_rows, sheet_meta
+        tex = os.path.join(d, "Assets", "Art")
+        os.makedirs(tex)
+        sheet = [[RED, RED, (1, 2, 3, 255), (1, 2, 3, 255)]]
+        with open(os.path.join(tex, "sheet.png"), "wb") as f:
+            f.write(make_png(4, 1, rgba_rows(sheet)))
+        with open(os.path.join(tex, "sheet.png.meta"), "w", encoding="utf-8") as f:
+            f.write(sheet_meta(2, [("left", 0, 0, 2, 1), ("right", 2, 0, 2, 1)]))
+        return os.path.join(tex, "sheet.png")
+
+    def _unity_scene_project(self, d):
+        """A Unity project with a 2x2-px-per-slice sheet at 2 pixels per unit (each sprite is one world unit) and a scene with a solid 'left' at x=0 and a 'right' at x=1."""
+        from .test_core import RED, SceneBuilder, make_png, rgba_rows, sheet_meta
+        tex = os.path.join(d, "Assets", "Art")
+        os.makedirs(tex)
+        row = [RED, RED, (1, 2, 3, 255), (1, 2, 3, 255)]
+        with open(os.path.join(tex, "sheet.png"), "wb") as f:
+            f.write(make_png(4, 2, rgba_rows([row, row])))
+        with open(os.path.join(tex, "sheet.png.meta"), "w", encoding="utf-8") as f:
+            f.write(sheet_meta(2, [("left", 0, 0, 2, 2), ("right", 2, 0, 2, 2)], ppu=2))
+        guid = "0123456789abcdef0123456789abcdef"
+        b = SceneBuilder()
+        b.add("A", 0, 0, (guid, 21300000), collider=61)
+        b.add("B", 1, 0, (guid, 21300002))
+        scenes = os.path.join(d, "Assets", "Scenes")
+        os.makedirs(scenes)
+        with open(os.path.join(scenes, "Main.unity"), "w", encoding="utf-8") as f:
+            f.write(b.text())
+
+    def test_import_unity_adds_sprites_from_a_project_folder_and_selects_the_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._unity_project(d)
+            before = len(self.studio.project.sprites)
+            self.main.import_unity([d])
+            names = [s.name for s in self.studio.project.sprites]
+            self.assertEqual(names[before:], ["left", "right"])
+            self.assertIs(self.studio.sprite, self.studio.project.sprite("left"))
+            self.assertTrue(self.studio.project.dirty)
+            self.assertEqual(self.main.sprites.count(), before + 2)                       # the project window's list shows them
+
+    def test_import_unity_pngs_takes_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            png = self._unity_project(d)
+            self.main.import_unity_pngs([png])
+            self.assertIsNotNone(self.studio.project.sprite("left"))
+
+    def test_import_unity_says_what_it_skipped_and_a_bad_path_is_a_message(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch("prowl_editor.gui.QtWidgets.QMessageBox.information") as info, mock.patch("prowl_editor.gui.error_box") as box:
+                self.main.import_unity([d])                                              # no textures: a note, no sprites, no crash
+                self.assertTrue(info.called)
+                self.main.import_unity([os.path.join(d, "missing")])
+                self.assertTrue(box.called)
+
+    def test_import_unity_project_adds_sprites_and_a_level_per_scene_and_selects_them(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            self._unity_scene_project(d)
+            with mock.patch("prowl_editor.gui.QtWidgets.QMessageBox.information") as info:      # (a real dialog would block the test run: nothing here may need one)
+                self.main.import_unity_project([d])
+            self.assertFalse(info.called, "a clean project gives no notes")
+            p = self.studio.project
+            lv = p.level("Main")
+            self.assertIsNotNone(lv)
+            self.assertIs(self.studio.level, lv)
+            self.assertEqual((lv.width, lv.height), (2, 1))
+            self.assertEqual([p.tiles[lv.get(x, 0)].sprite for x in (0, 1)], ["left", "right"])
+            self.assertTrue(p.tiles[lv.get(0, 0)].solid and not p.tiles[lv.get(1, 0)].solid)
+            self.assertEqual(self.main.levels.count(), len(p.levels))                      # the project window's list shows it
+            self.assertIn("Main", [self.main.levels.item(i).text().split("  ")[0] for i in range(self.main.levels.count())])
+
+    def test_unity_import_notes_are_shown_in_one_dialog(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            self._unity_scene_project(d)
+            os.remove(os.path.join(d, "Assets", "Art", "sheet.png"))                         # the scene now names sprites that were not imported
+            with mock.patch("prowl_editor.gui.QtWidgets.QMessageBox.information") as info:
+                self.main.import_unity_project([d])
+            self.assertEqual(info.call_count, 1)
+            self.assertIn("could not be found", info.call_args[0][2])
+
+    def test_the_sprites_only_unity_import_makes_no_levels(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            self._unity_scene_project(d)
+            before = len(self.studio.project.levels)
+            with mock.patch("prowl_editor.gui.QtWidgets.QMessageBox.information"):
+                self.main.import_unity([d])
+            self.assertEqual(len(self.studio.project.levels), before)
+            self.assertIsNotNone(self.studio.project.sprite("left"))
+
+    def test_the_import_menu_lists_the_unity_entries(self):
+        texts = [a.text() for m in self.main.menuBar().findChildren(QtWidgets.QMenu) for a in m.actions()]
+        self.assertIn("Unity project: sprites and scenes as levels...", texts)
+        self.assertIn("Unity 2D sprites from a project folder...", texts)
+        self.assertIn("Unity PNG textures...", texts)
+
     def test_new_project_asks_nothing_when_clean(self):
         self.studio.project.dirty = False
         self.main.file_new()

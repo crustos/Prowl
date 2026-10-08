@@ -21,6 +21,7 @@ from .model import Level, Project, ProjectError, Sprite, TileDef, color_hex
 
 JSON_FILTER = "Prowl2D project (*.json);;All files (*)"
 TEXT_FILTER = "ASCII art (*.txt);;All files (*)"
+PNG_FILTER = "PNG textures (*.png);;All files (*)"
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1097,6 +1098,10 @@ class ProjectWindow(QtWidgets.QMainWindow):
         imp = f.addMenu("&Import")
         self._action(imp, "ASCII art as sprites...", self.import_sprites)
         self._action(imp, "ASCII / emoji level...", self.import_level)
+        imp.addSeparator()
+        self._action(imp, "Unity project: sprites and scenes as levels...", self.import_unity_project)
+        self._action(imp, "Unity 2D sprites from a project folder...", self.import_unity)
+        self._action(imp, "Unity PNG textures...", self.import_unity_pngs)
         exp = f.addMenu("&Export")
         self._action(exp, "Sprites as ASCII art...", self.export_sprites)
         self._action(exp, "Levels as emoji text...", self.export_levels)
@@ -1243,6 +1248,53 @@ class ProjectWindow(QtWidgets.QMainWindow):
                 self.studio.tile = new[0].emoji
             self.studio.edited("structure")
             self.statusBar().showMessage("imported level %s%s" % (", ".join(l.name for l in made), "; new tiles: " + " ".join(t.emoji for t in new) if new else ""))
+
+    def import_unity_project(self, paths=None):
+        """File > Import > Unity project: the sprites of a Unity project folder, and a level for each of its scenes."""
+        if paths is None:
+            d = QtWidgets.QFileDialog.getExistingDirectory(self, "Import a Unity project (its sprites and scenes)")
+            paths = [d] if d else []
+        self._import_unity(paths, scenes=True)
+
+    def import_unity(self, paths=None):
+        """File > Import > Unity 2D sprites: just the PNG textures (and sprite sheets) of a Unity project folder, as sprites."""
+        if paths is None:
+            d = QtWidgets.QFileDialog.getExistingDirectory(self, "Import sprites from a Unity project (or any folder of PNGs)")
+            paths = [d] if d else []
+        self._import_unity(paths, scenes=False)
+
+    def import_unity_pngs(self, paths=None):
+        if paths is None:
+            paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Import Unity PNG textures", "", PNG_FILTER)
+        self._import_unity(paths, scenes=False)
+
+    def _import_unity(self, paths, scenes=False):
+        from .unity_scene import import_unity_project
+        sprites, levels, notes, textures = [], [], [], 0
+        for path in paths:
+            try:
+                report = import_unity_project(self.studio.project, path, scenes=scenes)
+            except (ProjectError, OSError) as e:
+                error_box(self, "Import " + os.path.basename(path), e)
+                continue
+            sprites += report.sprites
+            levels += report.levels
+            notes += report.notes
+            textures += report.pngs
+        if sprites or levels:
+            if sprites:
+                self.studio.sprite = sprites[0]
+            if levels:
+                self.studio.level = levels[0]
+                self.studio.tile = next(iter(self.studio.project.tiles), self.studio.tile)
+            self.studio.edited("structure")
+            self.statusBar().showMessage("imported %d sprite%s from %d Unity texture%s%s" % (
+                len(sprites), "" if len(sprites) == 1 else "s", textures, "" if textures == 1 else "s",
+                " and %d level%s from scenes" % (len(levels), "" if len(levels) == 1 else "s") if levels else ""))
+        if notes:                                                       # what was skipped, scaled or merged: said once, not buried in the status bar
+            shown = notes[:12] + (["... and %d more" % (len(notes) - 12)] if len(notes) > 12 else [])
+            QtWidgets.QMessageBox.information(self, "Unity import", "Imported %d sprite%s and %d level%s.\n\n" % (
+                len(sprites), "" if len(sprites) == 1 else "s", len(levels), "" if len(levels) == 1 else "s") + "\n".join(shown))
 
     def _write(self, title, default, text):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, title, default, TEXT_FILTER)

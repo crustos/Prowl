@@ -46,6 +46,7 @@
     <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelTerrainLimits.cs" Feature="terrain" />
     <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelChunk.cs" Feature="terrain" />
     <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\PixelChainTrace.cs" Feature="terrain" />
+    <Compile Include="..\Prowl.Runtime\Destruction2D\PixelTerrain\SandSim.cs" Feature="terrain" />
   </ItemGroup>
   <ItemGroup Label="Shattering (shared with Prowl.Runtime; a game that uses it)">
     <Compile Include="..\Prowl.Runtime\Destruction2D\Shatter\PolySet.cs" Feature="destruction" />

@@ -62,7 +62,7 @@ def rt(*parts):
 # A Feature="x" item of Prowl.Core2D.csproj is translated only for a game that names something of that feature, so code a game does not use never holds it
 # back (a terrain a game does not have has no say in whether the game translates). The names are the identifiers a game writes to use it.
 FEATURES = {
-    "terrain": r"\b(PixelTerrain2D|StampShape|PixelChunk|PixelRange|PixelColumn|PixelRectMerge|PixelQuadTree|PixelChainTrace)\b",
+    "terrain": r"\b(PixelTerrain2D|StampShape|PixelChunk|PixelRange|PixelColumn|PixelRectMerge|PixelQuadTree|PixelChainTrace|SandSim)\b",
     "destruction": r"\b(Shatter2D|Fracturer|PolySet|ExplodeOptions)\b",
     "ui": r"\b(UIText|Prowl\.Core2D\.UI)\b",
 }
@@ -687,7 +687,7 @@ CONFORMANCE = [
     # the pure core of the pixel terrain (the run-length model, rectangles, outlines) and of the shattering (Voronoi, Delaunay), against bitmap and geometric oracles
     ("pixel-terrain", "PixelTerrainConformance", [rt("Physics2D", "MaxInstancesAttribute.cs")] + [rt("Destruction2D", "PixelTerrain", f) for f in (
         "PixelMath.cs", "PixelRange.cs", "PixelColumn.cs", "StampShape.cs", "PixelRect.cs", "PixelQuadTree.cs", "PixelRectMerge.cs", "PixelTerrainLimits.cs",
-        "PixelChunk.cs", "PixelChainTrace.cs")],
+        "PixelChunk.cs", "PixelChainTrace.cs", "SandSim.cs")],
      os.path.join(HERE, "conformance", "PixelTerrainConformance.cs")),
     ("shatter", "ShatterConformance", [rt("Destruction2D", "Shatter", f) for f in ("PolySet.cs", "Fracturer.cs")],
      os.path.join(HERE, "conformance", "ShatterConformance.cs")),

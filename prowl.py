@@ -6,6 +6,7 @@
     python3 prowl.py --viewport [...]      also open the engine's SDL2 window on the first level
     python3 prowl.py --export-ascii DIR project.json     no GUI: write the project's sprites and levels as ASCII art / emoji text into DIR
     python3 prowl.py --import-ascii OUT.json [--sprites A.txt ...] [--levels B.txt ...]    no GUI: build a project from ASCII art and emoji levels
+    python3 prowl.py --import-unity OUT.json --unity DIR [DIR|FILE.png ...] [--cell N] [--no-scenes]    no GUI: import the 2D sprites (PNGs, sprite sheets) and scenes (as levels) of a Unity project into OUT.json
     python3 prowl.py --selftest            run the tests (the model and text formats, then the GUI windows if PyQt5 is installed)
     python3 prowl.py --screenshots DIR     draw every window to a PNG in DIR (works without a display) and exit
     python3 prowl.py --quit-after SECONDS  close the editor by itself after a while, as if the user quit (for smoke tests)
@@ -55,6 +56,24 @@ def cmd_import_ascii(out_json, sprites, levels):
     for path in levels:
         made, new = asciiart.import_levels(fileio.read_text(path), p, fileio.stem(path))
         print("levels %s from %s%s" % (", ".join(l.name for l in made), path, "  (new tiles: %s)" % " ".join(t.emoji for t in new) if new else ""))
+    p.save(out_json)
+    print("wrote", out_json)
+    return 0
+
+
+def cmd_import_unity(out_json, roots, scenes=True, cell=None):
+    from prowl_editor import fileio
+    from prowl_editor.model import Project
+    from prowl_editor.unity_scene import import_unity_project
+    if not roots:
+        print("--import-unity needs --unity DIR (a Unity project folder, any folder of PNGs, or a PNG)", file=sys.stderr)
+        return 2
+    p = Project.load(out_json) if os.path.exists(out_json) else Project(fileio.stem(out_json))      # an existing project is added to
+    for root in roots:
+        report = import_unity_project(p, root, scenes=scenes, cell=cell)
+        print("%s: %s" % (root, report.summary()))
+        for note in report.notes:
+            print("  note:", note)
     p.save(out_json)
     print("wrote", out_json)
     return 0
@@ -138,6 +157,10 @@ def main():
     ap.add_argument("--viewport", action="store_true", help="also open the engine's SDL2 window")
     ap.add_argument("--export-ascii", metavar="DIR", help="no GUI: write sprites/ and levels/ text files of the project into DIR")
     ap.add_argument("--import-ascii", metavar="OUT.json", help="no GUI: build a project from --sprites and --levels text files")
+    ap.add_argument("--import-unity", metavar="OUT.json", help="no GUI: import the 2D sprites and scenes of the --unity folders (or PNG files) into OUT.json (added to it if it exists)")
+    ap.add_argument("--cell", type=float, metavar="UNITS", help="with --import-unity: the grid cell for scenes, in world units (default: the size of the most common sprite)")
+    ap.add_argument("--no-scenes", action="store_true", help="with --import-unity: import the sprites only, no levels from scenes")
+    ap.add_argument("--unity", nargs="*", default=[], metavar="DIR", help="a Unity project folder, any folder of PNGs, or a PNG file")
     ap.add_argument("--sprites", nargs="*", default=[], metavar="FILE.txt")
     ap.add_argument("--levels", nargs="*", default=[], metavar="FILE.txt")
     ap.add_argument("--selftest", action="store_true")
@@ -151,6 +174,8 @@ def main():
             return cmd_export_ascii(a.export_ascii, a.project)
         if a.import_ascii:
             return cmd_import_ascii(a.import_ascii, a.sprites, a.levels)
+        if a.import_unity:
+            return cmd_import_unity(a.import_unity, a.unity, not a.no_scenes, a.cell)
         if a.screenshots:
             return cmd_screenshots(a.screenshots, a.project, a.demo)
         return cmd_gui(a.project, a.viewport, a.quit_after, a.demo)

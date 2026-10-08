@@ -22,7 +22,9 @@ static class Shared
     public const int TagArrow = 9;
     public const int TagEnemyBase = 100;        // enemy i has Tag TagEnemyBase + i
 
-    public static bool Won;
+    public static bool Won;                     // the slime has reached the teleporter at the bottom (at least once)
+    public static int Warps;                    // how many times the teleporter has sent it back to the start
+    public static bool WarpRequested;           // set by the teleporter (and by a page's reset key); PlayerScript acts on it next step
     public static int Deaths;
     public static int Gems;
     public static bool DeathRequested;          // set by hazards, enemies, bullets; PlayerScript acts on it next step

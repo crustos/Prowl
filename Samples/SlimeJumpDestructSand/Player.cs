@@ -60,6 +60,12 @@ class PlayerScript
     {
         float x = node.WorldX();
         float y = node.WorldY();
+        if (Shared.WarpRequested)
+        {
+            Shared.WarpRequested = false;
+            Warp();
+            return;
+        }
         if (lockTimer > 0f)
         {
             lockTimer -= Cfg.Dt;
@@ -200,6 +206,22 @@ class PlayerScript
         climbedSinceJumped = false;
         jumpVel = 0f;
         return vy;
+    }
+
+    // sent back to the start (by the teleporter, or a page's reset key): the world is left as it is
+    void Warp()
+    {
+        Console.WriteLine("warp " + Shared.Warps + " step=" + scene.FixedIndex);
+        lockTimer = 0.3f;
+        IsJumping = false;
+        IsClimbing = false;
+        climbedSinceJumped = false;
+        jumpVel = 0f;
+        Shared.LassoDetach();
+        node.SetPosition(Level.SpawnX(), Level.SpawnY());
+        body.SetVelocity(0f, 0f);
+        prevX = Level.SpawnX();
+        prevY = Level.SpawnY();
     }
 
     void Death()

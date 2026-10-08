@@ -47,6 +47,7 @@ class BotScript
 
     public void FixedUpdate()
     {
+        if (!InputState.BotOn) return;
         Node pn = Shared.PlayerNode;
         if (pn == null) return;
         float x = pn.WorldX();

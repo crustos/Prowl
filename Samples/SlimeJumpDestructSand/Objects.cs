@@ -44,13 +44,17 @@ class GemScript
     }
 }
 
-// Goal: reaching it wins.
+// The teleporter at the bottom of the shaft: reaching it counts as a win, and it sends the slime back to the start (PlayerScript does the moving, next step). The shaft
+// stays as it was left: the holes, the rubble and the sand are still there for the next trip down.
 [Script, MaxInstances(1)]
 class GoalScript
 {
     public Component Self;
     public void OnTriggerEnter2D(Collider2D other)
     {
-        if (other.Self.Node.Tag == Shared.TagPlayer) Shared.Won = true;
+        if (other.Self.Node.Tag != Shared.TagPlayer) return;
+        Shared.Won = true;
+        Shared.Warps++;
+        Shared.WarpRequested = true;
     }
 }

@@ -207,6 +207,7 @@ static class Destruct
     }
 
     public static int ItemCount() { return itemCount; }
+    public static bool ItemIsCrate(int i) { return IntAt(kind, i) == CrateKind; }
     // (a node is an arena slot: once an item is destroyed, its slot is handed to a fragment, which would pass for it: so an item that has gone off is marked spent)
     public static bool ItemLive(Scene2D scene, int i) { return IntAt(fuse, i) != -2 && scene.IsLive(NodeAt(items, i)); }
     public static float ItemX(int i) { return NodeAt(items, i).WorldX(); }
@@ -276,6 +277,16 @@ static class Destruct
             for (int x = 0; x < PxW; x++)
                 if (rock.IsSolid(x, y)) n++;
         return n;
+    }
+
+    // what a terrain pixel is, for drawing it: 0 air, 1 rock, 2 sand, 3 water
+    public static int Code(int x, int y)
+    {
+        int e = rock.Sand.ElementAt(x, y);
+        if (e == SandSim.Sand) return 2;
+        if (e == SandSim.Water) return 3;
+        if (rock.IsSolid(x, y)) return 1;
+        return 0;
     }
 
     public static int SandHash() { return (int)(rock.Sand.Hash() & 0x7fffffffu); }

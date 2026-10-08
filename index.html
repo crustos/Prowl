@@ -1,0 +1,255 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#14110f">
+<title>Slime Jump: Destruct Sand</title>
+<style>
+  :root { color-scheme: dark; --bg: #14110f; --panel: #211c19; --line: #3a322d; --ink: #e8dfd6; --dim: #a39688; --accent: #e0793f; --accent-ink: #1b120c; --portal: #a77bff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; overscroll-behavior: none; }
+  body { min-height: 100vh; min-height: 100dvh; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 14px 16px 20px; gap: 12px; }
+  body.locked { overflow: hidden; }
+  h1 { margin: 2px 0 0; font-size: 1.15rem; font-weight: 650; letter-spacing: .01em; text-align: center; }
+  p { margin: 0; color: var(--dim); max-width: 36rem; text-align: center; font-size: .9rem; }
+
+  #stage { position: relative; width: min(100%, calc((100vh - 220px) * 0.75), 540px); width: min(100%, calc((100dvh - 220px) * 0.75), 540px); aspect-ratio: 3 / 4; background: #000; border-radius: 8px; overflow: hidden; box-shadow: 0 6px 30px #0009; display: flex; align-items: center; justify-content: center; touch-action: none; -webkit-user-select: none; user-select: none; }
+  #stage.fs, #stage:fullscreen { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: none; aspect-ratio: auto; border-radius: 0; z-index: 50; box-shadow: none; }
+  canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; touch-action: none; outline: none; }
+  #stage.fs canvas, #stage:fullscreen canvas { width: auto; height: auto; }
+
+  .hud { position: absolute; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; padding: calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) 0 calc(8px + env(safe-area-inset-left)); pointer-events: none; }
+  .chip { pointer-events: auto; font: 600 .78rem/1 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; color: #fff; background: #0009; border: 1px solid #fff3; border-radius: 999px; padding: 7px 11px; min-height: 30px; display: inline-flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); }
+  .chip.dot::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #6fe08e; }
+  .chip.watch::before { background: var(--accent); }
+  button.chip { cursor: pointer; font-family: inherit; }
+  #fsx { display: none; }
+  #stage.fs #fsx, #stage:fullscreen #fsx { display: inline-flex; }
+  .right { display: flex; gap: 6px; }
+  #note, #hint { position: absolute; left: 12px; right: 12px; text-align: center; color: #fff; text-shadow: 0 1px 3px #000, 0 0 8px #000; pointer-events: none; transition: opacity .4s; }
+  #note { bottom: calc(14px + env(safe-area-inset-bottom)); font-size: .88rem; opacity: 0; }
+  #note.on { opacity: 1; }
+  .touch #note { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  #hint { top: 48px; font-size: .85rem; opacity: 1; }
+  #hint.off { opacity: 0; }
+  #hint span { display: inline-block; background: #000a; border-radius: 8px; padding: 6px 10px; }
+
+  /* touch controls: shown on devices with a touch screen */
+  #pad { display: none; position: absolute; left: 0; right: 0; bottom: 0; padding: 0 calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left)); justify-content: space-between; pointer-events: none; }
+  .touch #pad { display: flex; }
+  #pad .grp { display: flex; gap: 10px; align-items: flex-end; }
+  .pb { pointer-events: auto; width: 68px; height: 68px; border-radius: 50%; border: 2px solid #fff4; background: #0007; color: #fff; display: grid; place-items: center; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; padding: 0; backdrop-filter: blur(3px); }
+  .pb svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+  .pb.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .pb small { position: absolute; font: 600 .6rem/1 system-ui; bottom: 9px; letter-spacing: .05em; pointer-events: none; }
+  .pb { position: relative; }
+  #stage.fs .pb, #stage:fullscreen .pb { width: 76px; height: 76px; }
+
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  .bar .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .bar button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px; cursor: pointer; min-height: 40px; }
+  .bar button:hover { border-color: var(--accent); }
+  .bar button:focus-visible, .chip:focus-visible, .pb:focus-visible { outline: 2px solid var(--portal); outline-offset: 2px; }
+  .bar button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
+  #speeds { display: none; gap: 8px; }
+  #speeds.on { display: flex; }
+
+  table.keys { border-collapse: collapse; color: var(--dim); font-size: .85rem; }
+  table.keys td { padding: 3px 12px 3px 0; vertical-align: top; }
+  table.keys td:first-child { color: var(--ink); white-space: nowrap; }
+  kbd { font: 600 .78rem ui-monospace, monospace; background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; }
+  .touch table.keys { display: none; }
+  .tip { display: none; }
+  .touch .tip { display: block; }
+  details { max-width: 36rem; width: 100%; color: var(--dim); font-size: .85rem; }
+  #log { font: 12px/1.4 ui-monospace, monospace; max-height: 8em; overflow: auto; white-space: pre-wrap; margin-top: 6px; }
+  #err { color: #ff8f7a; text-align: center; max-width: 36rem; }
+</style>
+<h1>Slime Jump: Destruct Sand</h1>
+<p>Dig down the shaft of an old brick building. Shoot crates and boulders, break the floors, and let the sand and water run down. The teleporter at the bottom sends you back to the top. It starts as a demo: a bot plays until you take over.</p>
+
+<div id="stage">
+  <canvas id="screen" width="540" height="720" aria-label="The game"></canvas>
+  <div class="hud">
+    <span class="chip" id="where">Room 1 / 7</span>
+    <span class="right">
+      <button class="chip dot watch" id="mode" title="Switch between the bot and you (B)">Watching the bot</button>
+      <button class="chip" id="fsx" aria-label="Exit full screen">Exit</button>
+    </span>
+  </div>
+  <div id="hint"><span id="hinttext"></span></div>
+  <div id="note" role="status" aria-live="polite"></div>
+  <div id="pad">
+    <div class="grp">
+      <button class="pb" data-key="65" aria-label="Move left"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <button class="pb" data-key="68" aria-label="Move right"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+    </div>
+    <div class="grp">
+      <button class="pb" data-key="83" aria-label="Shoot straight down"><svg viewBox="0 0 24 24"><path d="M12 4v12M6 11l6 7 6-7"/></svg><small>DIG</small></button>
+      <button class="pb" data-key="32" aria-label="Jump"><svg viewBox="0 0 24 24"><path d="M12 20V8M6 13l6-7 6 7"/></svg><small>JUMP</small></button>
+    </div>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="play" aria-pressed="false">Take control</button>
+  <span id="speeds"><button data-speed="1" aria-pressed="true">1x</button><button data-speed="2" aria-pressed="false">2x</button><button data-speed="4" aria-pressed="false">4x</button></span>
+  <span class="sep"></span>
+  <button id="pause" aria-pressed="false">Pause</button>
+  <button id="fs">Full screen</button>
+  <button id="again">New run</button>
+</div>
+
+<table class="keys" aria-label="Controls">
+  <tr><td><kbd>A</kbd> <kbd>D</kbd> or <kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>walk</td></tr>
+  <tr><td><kbd>W</kbd> or <kbd>&uarr;</kbd> or <kbd>Space</kbd></td><td>jump</td></tr>
+  <tr><td>Mouse</td><td>aim; click to shoot</td></tr>
+  <tr><td><kbd>S</kbd> or <kbd>&darr;</kbd></td><td>shoot straight down (dig)</td></tr>
+  <tr><td><kbd>R</kbd></td><td>back to the start</td></tr>
+  <tr><td><kbd>B</kbd> <kbd>P</kbd> <kbd>F</kbd></td><td>bot or you, pause, full screen</td></tr>
+</table>
+<p class="tip">Tap anywhere on the picture to aim and shoot. The buttons walk, jump and dig straight down.</p>
+<div id="err" role="alert"></div>
+<details><summary>Log</summary><div id="log"></div></details>
+
+<script type="module">
+  import { startProwl } from "./prowl_web.js";
+  const $ = (id) => document.getElementById(id);
+  const stage = $("stage"), canvas = $("screen"), note = $("note"), hint = $("hint"), hinttext = $("hinttext"), out = $("log"), err = $("err");
+  const touch = (matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0);
+  if (touch) document.body.classList.add("touch");
+
+  // ---- what the game says ---------------------------------------------------------------------------------------------------------------
+  let room = 1, lap = 1, mode = "watch", noteTimer = 0, hintTimer = 0;
+  const say = (text, ms = 2200) => { note.textContent = text; note.classList.add("on"); clearTimeout(noteTimer); noteTimer = setTimeout(() => note.classList.remove("on"), ms); };
+  const showWhere = () => { $("where").textContent = "Room " + room + " / 7" + (lap > 1 ? "  ·  Lap " + lap : ""); };
+  const showHint = () => {
+    hinttext.textContent = mode === "watch"
+      ? (touch ? "Watching the bot. Tap the screen to take over." : "Watching the bot. Press any key or click to take over.")
+      : (touch ? "Tap the screen to aim and shoot." : "Mouse aims, click shoots. A D walk, W jumps, S digs down.");
+    hint.classList.remove("off");
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.add("off"), mode === "watch" ? 9000 : 6000);
+  };
+  const log = (s) => {
+    out.textContent += s + "\n"; out.scrollTop = out.scrollHeight;
+    let m;
+    if ((m = /^ROOM (\d+)/.exec(s))) { room = +m[1]; showWhere(); }
+    else if ((m = /^WARP (\d+)/.exec(s))) { lap = +m[1] + 1; showWhere(); say("The teleporter sent you back to the top. Lap " + lap + ".", 3200); }
+    else if ((m = /^MODE (\w+)/.exec(s))) {
+      mode = m[1];
+      const chip = $("mode");
+      chip.textContent = mode === "watch" ? "Watching the bot" : "You are playing";
+      chip.classList.toggle("watch", mode === "watch");
+      $("play").textContent = mode === "watch" ? "Take control" : "Hand to the bot";
+      $("play").setAttribute("aria-pressed", String(mode !== "watch"));
+      $("speeds").classList.toggle("on", mode === "watch");
+      showHint();
+    }
+    else if (/^boom /.test(s)) say(s.replace(/^boom step=\d+ /, "").replace(/ x\*1000.*$/, "").replace("=", " ") + " burst", 1500);
+  };
+
+  // ---- speed, pause, full screen ------------------------------------------------------------------------------------------------
+  let speed = 1, paused = false;
+  try { speed = Math.max(1, Math.min(4, +sessionStorage.getItem("speed") || 1)); } catch (e) {}
+  const setSpeed = (n) => {
+    speed = n;
+    try { sessionStorage.setItem("speed", String(n)); } catch (e) {}
+    document.querySelectorAll("[data-speed]").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.speed === n)));
+  };
+  document.querySelectorAll("[data-speed]").forEach((b) => b.addEventListener("click", () => setSpeed(+b.dataset.speed)));
+  setSpeed(speed);
+  const setPause = (p) => { paused = p; $("pause").setAttribute("aria-pressed", String(p)); $("pause").textContent = p ? "Resume" : "Pause"; if (p) say("Paused", 1e9); else note.classList.remove("on"); };
+  $("pause").addEventListener("click", () => setPause(!paused));
+  $("again").addEventListener("click", () => location.reload());
+
+  // The picture is 3:4. In full screen it is the largest 3:4 rectangle that fits, in the middle; the touch buttons sit over the bars at its sides, or over its bottom.
+  const fit = () => {
+    if (!stage.classList.contains("fs") && !document.fullscreenElement && !document.webkitFullscreenElement) { canvas.style.width = canvas.style.height = ""; return; }
+    const w = stage.clientWidth, h = stage.clientHeight;
+    const ch = Math.min(h, w * 4 / 3);
+    canvas.style.height = Math.floor(ch) + "px";
+    canvas.style.width = Math.floor(ch * 3 / 4) + "px";
+  };
+  const inFs = () => stage.classList.contains("fs") || !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const afterFs = () => { document.body.classList.toggle("locked", inFs()); $("fs").textContent = inFs() ? "Exit full screen" : "Full screen"; fit(); canvas.focus(); };
+  const toggleFs = async () => {
+    if (inFs()) {
+      if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen().catch(() => {});
+      else if (document.webkitFullscreenElement && document.webkitExitFullscreen) document.webkitExitFullscreen();
+      stage.classList.remove("fs");
+    } else {
+      const req = stage.requestFullscreen || stage.webkitRequestFullscreen;
+      if (req) { try { await req.call(stage); } catch (e) { stage.classList.add("fs"); } }      // refused: fill the page instead
+      else stage.classList.add("fs");                                                       // no element full screen here (an iPhone): fill the page
+    }
+    afterFs();
+  };
+  $("fs").addEventListener("click", toggleFs);
+  $("fsx").addEventListener("click", toggleFs);
+  document.addEventListener("fullscreenchange", afterFs);
+  document.addEventListener("webkitfullscreenchange", afterFs);
+  addEventListener("resize", fit);
+  addEventListener("orientationchange", () => setTimeout(fit, 120));
+
+  // ---- keys and touch buttons become the events gfx2d.h describes: the game polls them ------------------------------------------------
+  let prowl = null;
+  const push = (type, a, b = 0, c = 0, d = 0) => { if (prowl) prowl.input.queue.push([type, a, b, c, d]); };
+  const GAME_KEYS = { KeyA: 65, KeyD: 68, KeyW: 87, KeyS: 83, ArrowLeft: 263, ArrowRight: 262, ArrowUp: 265, ArrowDown: 264, Space: 32, KeyB: 66, KeyR: 82 };
+  addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.code === "KeyF" && !e.repeat) { e.preventDefault(); toggleFs(); return; }
+    if (e.code === "KeyP" && !e.repeat) { e.preventDefault(); setPause(!paused); return; }
+    if (e.code === "Escape" && stage.classList.contains("fs")) { toggleFs(); return; }
+    const k = GAME_KEYS[e.code];
+    if (!k) return;
+    e.preventDefault();
+    if (e.target === canvas) return;                          // the canvas has it focused: the engine's own listener sends it
+    push(5, k, e.repeat ? 1 : 0);
+  });
+  addEventListener("keyup", (e) => {
+    const k = GAME_KEYS[e.code];
+    if (!k) return;
+    e.preventDefault();
+    if (e.target !== canvas) push(6, k);
+  });
+  addEventListener("blur", () => push(8, 0));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) push(8, 0); });
+
+  document.querySelectorAll(".pb").forEach((b) => {
+    const k = +b.dataset.key;
+    let down = false;
+    const up = () => { if (down) { down = false; b.classList.remove("on"); push(6, k); } };
+    b.addEventListener("pointerdown", (e) => { e.preventDefault(); try { b.setPointerCapture(e.pointerId); } catch (x) {} if (!down) { down = true; b.classList.add("on"); push(5, k); } });
+    b.addEventListener("pointerup", up);
+    b.addEventListener("pointercancel", up);
+    b.addEventListener("lostpointercapture", up);
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+  $("mode").addEventListener("click", () => { push(5, 66); push(6, 66); canvas.focus(); });
+  $("play").addEventListener("click", () => { push(5, 66); push(6, 66); canvas.focus(); });
+
+  // ---- the game ---------------------------------------------------------------------------------------------------------------------------
+  try {
+    prowl = await startProwl({ wasm: "prowl2d-player.wasm", files: [], canvas, log, manual: true, gfx: new URLSearchParams(location.search).get("gfx") || "auto" });
+    window.prowl = prowl;
+    if (prowl.error) throw new Error(prowl.error);
+    let last = performance.now(), acc = 0;
+    const STEP = 1000 / 60;
+    const tick = (now) => {
+      acc += Math.min(now - last, 250); last = now;
+      if (!paused) {
+        const sp = mode === "watch" ? speed : 1;
+        let k = 0;
+        while (acc >= STEP / sp && k < 5 * sp) { prowl.step(1); acc -= STEP / sp; k++; }
+        if (acc > STEP * 5) acc = 0;
+      } else acc = 0;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    fit();
+    if (!touch) canvas.focus();
+    window.prowlReady = true;
+  } catch (e) {
+    err.textContent = "This page needs WebGL2 or WebGPU and WebAssembly: " + e.message;
+  }
+</script>

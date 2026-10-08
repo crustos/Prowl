@@ -24,7 +24,7 @@ static class Engine
     static void SetBodyAt(int i, Rigidbody2D rb) { bodies[i] = rb; }
 
     /// <summary>Bump when a function below changes its meaning: the host checks it.</summary>
-    public static int Version() { return 4; }
+    public static int Version() { return 5; }
 
     // ---- the process: renderer and scene -------------------------------------------------------------------------------------
 
@@ -36,6 +36,7 @@ static class Engine
         if (scene == null)                    // the scene is an arena class of capacity 1: a second `new Scene2D()` would have no slot, so Init after Shutdown reuses it
         {
             Scripts.Init();
+            Input2D.Init();
             scene = new Scene2D();
             bodies = new Rigidbody2D[CoreLimits.Nodes];
             blaster = new Shatter2D(scene, 1u);
@@ -263,6 +264,41 @@ static class Engine
     {
         if (ready == 0) return;
         scene.SetGravity(x, y);
+    }
+
+    // ---- scripts and input -----------------------------------------------------------------------------------------------------
+
+    /// <summary>How many [Script] classes this library was built with (the editor's Build puts the project's scripts in, in the order of its manifest).</summary>
+    public static int ScriptCount()
+    {
+        return ScriptTable.Count();
+    }
+
+    /// <summary>Adds the script with this number (its place in the manifest) to a node. 1 if it was added, 0 if the node is gone, the number is wrong or all of its instances are in use.</summary>
+    public static int AttachScript(int node, int script)
+    {
+        if (ready == 0) return 0;
+        Node n = scene.NodeAt(node);
+        if (n == null) return 0;
+        return ScriptTable.Add(n, script);
+    }
+
+    /// <summary>A key went down (1) or up (0): the codes are the viewport's (gfx2d.h), which are capital letters and digits as characters.</summary>
+    public static void SetKey(int key, int down)
+    {
+        Input2D.SetKey(key, down);
+    }
+
+    /// <summary>The mouse in world units, and which buttons are held (bit 0 left, 1 middle, 2 right).</summary>
+    public static void SetMouse(float x, float y, int buttons)
+    {
+        Input2D.SetMouse(x, y, buttons);
+    }
+
+    /// <summary>Lets go of every key and button (the play mode starts or stops).</summary>
+    public static void ClearInput()
+    {
+        Input2D.Clear();
     }
 
     // ---- a frame ---------------------------------------------------------------------------------------------------------------

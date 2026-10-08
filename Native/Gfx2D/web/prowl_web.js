@@ -2482,7 +2482,7 @@ export async function startProwl({ wasm, canvas, log = console.log, manual = fal
   const x = instance.exports;
   mem = x.memory;
   if (x._initialize) x._initialize();
-  const state = { frame: 0, exports: x, error: null, jit, backend: backend.kind, readPixels: backend.read, gfx: backend };   // gfx: keeps the WebGPU adapter reachable
+  const state = { frame: 0, exports: x, error: null, jit, backend: backend.kind, readPixels: backend.read, gfx: backend, input };   // input.queue: a page can push events of its own (touch buttons, say) in the form gfx2d.h gives   // gfx: keeps the WebGPU adapter reachable
   const rc = x.prowl_init();
   if (rc !== 0) { state.error = "prowl_init returned " + rc; log(state.error); return state; }
   state.step = (n = 1) => { for (let i = 0; i < n; i++) { x.prowl_frame(); state.frame++; } return state.frame; };

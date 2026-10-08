@@ -15,6 +15,14 @@ The editor is several floating windows (project / palette / sprite editor / leve
 
     python3 tools/prowl2d_so.py            -> /tmp/libprowl2d.so   (set PROWL2D_LIB to use another path)
 
+Sand: the Sand window (or S in the viewport) switches on the GPU sand (compute shaders): the left mouse button paints sand, water or stone (keys 1 2 3, 0 erases, [ ] brush,
+Space pauses, C clears), and the level's solid tiles are stone to it. It needs OpenGL ES 3.1 with compute (Mesa's software GL has it).
+
+Scripts: the Scripts window is a small code editor for the project's C# (saved in the project file). Mark a class [Script, MaxInstances(N)] with `public Component Self;` and
+callbacks (Update, OnCollisionBegin2D ...), tick it for a sprite (it runs on every tile showing that sprite) or for the game (once per play), and press F5: the scripts are
+translated to C with the engine (needs the .NET SDK, about a minute), a new engine library is linked, the viewport's window closes and opens again on it. Errors come back with
+their line. Scripts read keys and the mouse with Input2D (Native/Engine2D/Input2D.cs). Only the C# subset builds (tools/ccsharp/README.md).
+
 Without it everything but the viewport works. Sprites are indexed-palette pixel art (a letter per colour); levels are grids of emoji tiles, which an
 exported level shows as text. See prowl_editor/asciiart.py for both formats.
 """

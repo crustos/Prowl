@@ -29,6 +29,8 @@ WEB_IMPORT(gfx_web_texture_free) void gfx_web_texture_free(int id);
 WEB_IMPORT(gfx_web_triangles) void gfx_web_triangles(const float *vertices, int count, int texture);
 WEB_IMPORT(gfx_web_clip) void gfx_web_clip(int x0, int y0, int x1, int y1);
 WEB_IMPORT(gfx_web_poll) int gfx_web_poll(int *out5);
+/* an effect (gfx_effect): one pass over the picture so far, inside the clip; `params` are GFX_FX_PARAMS floats, read at once */
+WEB_IMPORT(gfx_web_effect) void gfx_web_effect(int id, const float *params);
 
 static int g_w, g_h, g_ready, g_dirty, g_drawn;
 static float g_cx, g_cy, g_half = 5.f, g_bgr, g_bgg, g_bgb;
@@ -42,7 +44,8 @@ static void ui_poll(void)
     while (gfx_web_poll(e))
         gfxui_push(e[0], e[1], e[2], e[3], e[4]);
 }
-static const GfxUiBackend g_ui = { gfx_web_texture_create, gfx_web_texture_update, gfx_web_texture_free, ui_triangles, gfx_web_clip, ui_poll };
+static void ui_effect(int id, const float *params) { gfx_web_effect(id, params); g_dirty = 1; }
+static const GfxUiBackend g_ui = { gfx_web_texture_create, gfx_web_texture_update, gfx_web_texture_free, ui_triangles, gfx_web_clip, ui_poll, ui_effect };
 
 int gfx_init(int width, int height)
 {

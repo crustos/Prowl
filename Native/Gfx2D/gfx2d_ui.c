@@ -6,6 +6,9 @@
 #include "gfx2d_font.h"
 #include "gfx2d_ui.h"
 
+#define GFX_FX_WANT_INFO /* the effects' names and defaults (generated from fx/*.fx) */
+#include "gfx2d_fx_gen.h"
+
 typedef struct Tex { int used, w, h, filter; } Tex;
 
 static const GfxUiBackend *g_be;
@@ -13,6 +16,7 @@ static int g_w, g_h;
 static Tex g_tex[GFX_MAX_TEXTURES];
 static int g_clip[4];
 static int g_nverts;
+static int g_nfx; /* effects queued since the frame began */
 static int g_events[GFX_MAX_EVENTS][5];
 static int g_ev_head, g_ev_count, g_ev_dropped;
 
@@ -55,6 +59,7 @@ void gfxui_new_frame(void)
     g_clip[2] = g_w;
     g_clip[3] = g_h;
     g_nverts = 0;
+    g_nfx = 0;
     g_be->clip(0, 0, g_w, g_h);
 }
 
@@ -137,6 +142,24 @@ int gfx_clip(int x, int y, int width, int height)
         return 1;
     g_clip[0] = x0; g_clip[1] = y0; g_clip[2] = x1; g_clip[3] = y1;
     g_be->clip(x0, y0, x1, y1);
+    return 1;
+}
+
+int gfx_effect(int effect, const float *params, int count)
+{
+    float slot[GFX_FX_PARAMS];
+    int i, given;
+    if (!g_be || g_be->effect == NULL || effect < 1 || effect > GFX_FX_ID_MAX || gfx_fx_info[effect].name == NULL || g_nfx >= GFX_MAX_EFFECTS)
+        return 0;
+    given = params == NULL || count < 0 ? 0 : (count > GFX_FX_PARAMS ? GFX_FX_PARAMS : count);
+    for (i = 0; i < GFX_FX_PARAMS; i++) {
+        float v = i < given ? params[i] : gfx_fx_info[effect].defaults[i];
+        if (!(v >= -1e30f && v <= 1e30f)) /* not a number, or beyond any use: the default (every backend then sees only finite values) */
+            v = gfx_fx_info[effect].defaults[i];
+        slot[i] = v;
+    }
+    g_nfx++;
+    g_be->effect(effect, slot);
     return 1;
 }
 

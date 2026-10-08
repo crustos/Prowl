@@ -4,7 +4,7 @@ A small C library that draws a batch of sprites (coloured boxes and discs) in **
 (`crust/examples/unity_pack/gles3_batch.h`, the 2D GPU path of `unity_pack`) into an offscreen framebuffer, which it can save as a PPM, hash, or sample.
 
 ```
-gfx2d.h        the API: 8 functions and a flat float batch. The only place it is written down: tools/ccsharp/gen_pb2.py --lib gfx2d reads it
+gfx2d.h        the API: a flat float batch, the UI layer and the effects. The only place it is written down: tools/ccsharp/gen_pb2.py --lib gfx2d reads it
 engine_draw.h  the host's view of what Crust's renderer asks of its engine (three structs, ~15 functions), fixed here instead of generated per project
 gfx2d.c        answers that interface (a procedural two-sprite atlas, no lights), makes a headless EGL context, and #includes Crust's renderer
 ```
@@ -41,6 +41,17 @@ headless, so it has no window to receive input**: there, events come from `gfx_i
 **Tests** (`python3 tools/gfx_ui_test.py [--web] [--ui]`): the font and clip scenes are drawn by GLES, WebGL2 and WebGPU and compared with pictures made by an independent CPU rasteriser
 (Stride2D's soft backend; `Native/Gfx2D/test/expected/`). `--ui` also builds `Samples/UIText2D`, translated to C by CCSharp, and requires it to print what the .NET run prints and to draw the
 same font scene. Not covered: input from a real browser (the page code is the one Stride2D tests; here only injected events are).
+
+## Effects: one pass over the picture
+`gfx_effect(id, params, count)` runs a shader over everything drawn so far in the frame (the sprite batch and the meshes before the call), inside the current clip, and changes
+nothing drawn after it. Effects run in call order, each on what the last left. They are written once, in `fx/*.fx` (GLSL, WGSL and a C reference side by side, with the
+parameters' names, ranges and defaults), and `python3 tools/gfx_fx_gen.py` generates what each renderer runs: `gfx2d_fx_gen.h` (GLES), the shader block of `web/prowl_web.js`
+(WebGL2 and WebGPU), the id constants in `gfx2d.h` (so the C# bindings have them) and `prowl_editor/fxdefs.py` (the PyQt editor builds its controls from it). A new effect is one new
+file. The set: brightness / contrast, tint, blend modes, HSV and HLS adjust, levels, six gradients (ported from OpenToonz, BSD-3: `fx/OPENTOONZ-LICENSE.txt`) and the 2D
+lights (`lights`, `spot_light`, `scene_lights`). See `fx/README.md`.
+
+`python3 tools/gfx_fx_test.py [--web]` draws each effect on GLES (and, with `--web`, on the page's WebGL2 and WebGPU) and compares it with the C reference made from the same
+`.fx` files (`gfx2d_fx_ref.h`).
 
 ## Measured (Mesa llvmpipe, software GL, OpenGL ES 3.2 on this machine)
 

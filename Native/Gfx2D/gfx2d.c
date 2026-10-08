@@ -7,6 +7,8 @@
 
 #include "gfx2d.h"
 #include "gfx2d_ui.h"
+#define GFX_FX_WANT_GLSL /* the effects' shaders (generated from fx/*.fx) */
+#include "gfx2d_fx_gen.h"
 #include "gles3_batch.h" /* from crust/examples/unity_pack: also pulls in gles3_render.h and, through it, our engine_draw.h */
 
 /* ---- the camera: the renderer reads these ----------------------------------------------------------------------------------- */
@@ -68,6 +70,9 @@ static int g_dirty; /* a frame has been drawn that g_pixels does not hold yet: t
 static GLuint g_mesh_prog, g_mesh_vao, g_mesh_vbo;
 static GLint g_mesh_view, g_mesh_tex;
 static GLuint g_ui_tex[GFX_MAX_TEXTURES];
+/* the effects: one program each (GFX_FX_VS draws one big triangle; the fragment shader reads the picture as it was from g_fx_scratch with texelFetch) */
+static GLuint g_fx_prog[GFX_FX_ID_MAX + 1], g_fx_scratch;
+static GLint g_fx_u_src[GFX_FX_ID_MAX + 1], g_fx_u_p[GFX_FX_ID_MAX + 1], g_fx_u_size[GFX_FX_ID_MAX + 1];
 static int g_ui_texw[GFX_MAX_TEXTURES];
 
 static const char *MESH_VS =
@@ -107,6 +112,50 @@ static GLuint ui_shader(GLenum type, const char *src)
     return s;
 }
 
+static int fx_gl_init(void)
+{
+    int i;
+    memset(g_fx_prog, 0, sizeof g_fx_prog);
+    glGenTextures(1, &g_fx_scratch);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_fx_scratch);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_w, g_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    for (i = 1; i <= GFX_FX_ID_MAX; i++) { /* an effect whose shader does not build is left out (PROWL2D_GFX_DEBUG=1 says why): the others still work */
+        GLuint v, f, p;
+        GLint ok = 0;
+        if (gfx_fx_glsl[i] == NULL)
+            continue;
+        v = ui_shader(GL_VERTEX_SHADER, GFX_FX_VS);
+        f = ui_shader(GL_FRAGMENT_SHADER, gfx_fx_glsl[i]);
+        if (!v || !f) {
+            if (v) glDeleteShader(v);
+            if (f) glDeleteShader(f);
+            if (getenv("PROWL2D_GFX_DEBUG")) fprintf(stderr, "gfx2d: effect %d shader did not build\n", i);
+            continue;
+        }
+        p = glCreateProgram();
+        glAttachShader(p, v);
+        glAttachShader(p, f);
+        glLinkProgram(p);
+        glDeleteShader(v);
+        glDeleteShader(f);
+        glGetProgramiv(p, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            glDeleteProgram(p);
+            continue;
+        }
+        g_fx_prog[i] = p;
+        g_fx_u_src[i] = glGetUniformLocation(p, "u_src");
+        g_fx_u_p[i] = glGetUniformLocation(p, "u_p");
+        g_fx_u_size[i] = glGetUniformLocation(p, "u_size");
+    }
+    return 1;
+}
+
 static int ui_gl_init(void)
 {
     GLuint v = ui_shader(GL_VERTEX_SHADER, MESH_VS), f = ui_shader(GL_FRAGMENT_SHADER, MESH_FS);
@@ -136,7 +185,7 @@ static int ui_gl_init(void)
     glEnableVertexAttribArray(1);
     glEnableVertexAttribArray(2);
     glBindVertexArray(0);
-    return 1;
+    return fx_gl_init();
 }
 
 static void ui_texture_create(int id, int w, int h, int filter, const uint8_t *rgba)
@@ -206,10 +255,30 @@ static void ui_clip(int x0, int y0, int x1, int y1)
     glScissor(x0, g_h - y1, x1 - x0, y1 - y0); /* GL counts rows from the bottom */
 }
 
+static void ui_effect(int id, const float *params)
+{
+    if (id < 1 || id > GFX_FX_ID_MAX || !g_fx_prog[id])
+        return;
+    glBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
+    glViewport(0, 0, g_w, g_h);
+    glActiveTexture(GL_TEXTURE0); /* the picture so far, copied (the scissor does not limit a copy), then drawn over without blending */
+    glBindTexture(GL_TEXTURE_2D, g_fx_scratch);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, g_w, g_h);
+    glDisable(GL_BLEND);
+    glUseProgram(g_fx_prog[id]);
+    glUniform1i(g_fx_u_src[id], 0);
+    glUniform4fv(g_fx_u_p[id], GFX_FX_PARAMS / 4, params);
+    glUniform4f(g_fx_u_size[id], (float)g_w, (float)g_h, 0.f, 0.f);
+    glBindVertexArray(0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEnable(GL_BLEND);
+    g_dirty = 1;
+}
+
 static void sync(void); /* defined below; the window needs it to show a finished frame */
 #include "gfx2d_sdl.inc" /* the desktop window (only with -DGFX_SDL; otherwise stubs): gfx_window_open, gfx_present, and win_poll, which feeds the event queue */
 
-static const GfxUiBackend g_ui = { ui_texture_create, ui_texture_update, ui_texture_free, ui_triangles, ui_clip, win_poll };
+static const GfxUiBackend g_ui = { ui_texture_create, ui_texture_update, ui_texture_free, ui_triangles, ui_clip, win_poll, ui_effect };
 
 int gfx_init(int width, int height)
 {

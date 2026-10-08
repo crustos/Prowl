@@ -13,6 +13,7 @@ typedef struct GfxUiBackend
     void (*triangles)(const float *vertices, int count, int texture); /* over the frame so far */
     void (*clip)(int x0, int y0, int x1, int y1);                      /* pixels from the TOP left, end exclusive: 0,0,w,h is no clip */
     void (*poll)(void);                                                 /* may be NULL: takes what the page has received and gfxui_push()es it */
+    void (*effect)(int id, const float *params);                        /* may be NULL: one pass over the frame so far, inside the clip; params: GFX_FX_PARAMS floats */
 } GfxUiBackend;
 
 /* gfx_init calls attach (with the picture's size), gfx_shutdown calls detach, gfx_draw calls new_frame before it draws. */

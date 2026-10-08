@@ -336,6 +336,152 @@ static class PixelTerrainConformance
         Console.WriteLine("edits          " + total + " cases: " + wrong + " wrong, " + unnormal + " with overlapping ranges");
     }
 
+    // ---- the sand simulation ---------------------------------------------------------------------------------
+    // Against what must hold however the grains fall: nothing is lost or made, stone does not move, a pixel's alpha says what is in it, a run is repeatable
+    // after a Reset, and above all that sleeping chunks lose nothing: a run that steps only the awake chunks gives, cell for cell and pixel for pixel, what a
+    // run that steps every chunk every time gives. Sand alone must come to rest, sleep, and have had its ground published.
+
+    static void LoadSand(SandSim s, byte[] pixels, byte[] plan, uint seed, int cw, int ch, int nx, int ny, int spread)
+    {
+        s.Reset(cw * nx, ch * ny, nx, ny);
+        s.WaterSpread = spread;
+        s.Seed(seed);
+        int w = s.Width;
+        for (int i = 0; i < plan.Length; i++)
+        {
+            int e = plan[i];
+            if (e == 0) continue;
+            int x = i % w, y = i / w;
+            if (e == SandSim.Stone)
+            {
+                s.SetRaw(i, e);
+                s.WriteColor(pixels, x, y, e);
+            }
+            else s.Spawn(pixels, x, y, e);
+        }
+    }
+
+    static void PublishAll(SandSim s)                     // what the terrain layer does with the chunks that are ready
+    {
+        for (int c = 0; c < s.Ready.Length; c++)
+            if (s.Ready[c] != 0) s.Published(c);
+    }
+
+    static bool SameCells(SandSim a, byte[] pa, SandSim b, byte[] pb)
+    {
+        for (int i = 0; i < a.Types.Length; i++)
+            if (a.Types[i] != b.Types[i]) return false;
+        for (int i = 0; i < pa.Length; i++)
+            if (pa[i] != pb[i]) return false;
+        return true;
+    }
+
+    static int SandUnsettled(SandSim s)
+    {
+        int bad = 0;
+        for (int y = 1; y < s.Height; y++)
+            for (int x = 0; x < s.Width; x++)
+            {
+                if (s.ElementAt(x, y) != SandSim.Sand) continue;
+                int a = s.ElementAt(x, y - 1), b = s.ElementAt(x - 1, y - 1), c = s.ElementAt(x + 1, y - 1);
+                if (a == SandSim.Air || a == SandSim.Water || b == SandSim.Air || b == SandSim.Water || c == SandSim.Air || c == SandSim.Water) bad++;
+            }
+        return bad;
+    }
+
+    static void TestSand(int cases)
+    {
+        SandSim simA = new SandSim(8, 8, 1, 1);           // two for every case, reset for each: an arena class has a fixed number of slots
+        SandSim simB = new SandSim(8, 8, 1, 1);
+        int diverged = 0, lost = 0, badAlpha = 0, notAsleep = 0, notAtRest = 0, notPublished = 0, notRepeatable = 0, sandCases = 0;
+        long moves = 0;
+        for (int k = 0; k < cases; k++)
+        {
+            int cw = 5 + Rng.Next(12), ch = 5 + Rng.Next(12), nx = 1 + Rng.Next(4), ny = 1 + Rng.Next(4);
+            int w = cw * nx, h = ch * ny;
+            bool sandOnly = Rng.Next(2) == 0;
+            int spread = 1 + Rng.Next(8);
+            uint seed = (uint)(1 + Rng.Next(1000000));
+            byte[] plan = new byte[w * h];
+            int nStone = 0, nSand = 0, nWater = 0;
+            for (int i = 0; i < plan.Length; i++)
+            {
+                int r = Rng.Next(100);
+                if (r < 12) { plan[i] = (byte)SandSim.Stone; nStone++; }
+                else if (r < (sandOnly ? 45 : 27)) { plan[i] = (byte)SandSim.Sand; nSand++; }
+                else if (!sandOnly && r < 42) { plan[i] = (byte)SandSim.Water; nWater++; }
+            }
+            byte[] pa = new byte[w * h * 4];
+            byte[] pb = new byte[w * h * 4];
+            LoadSand(simA, pa, plan, seed, cw, ch, nx, ny, spread);
+            LoadSand(simB, pb, plan, seed, cw, ch, nx, ny, spread);
+            int limit = sandOnly ? 1500 : 200;
+            int ran = 0;
+            bool differ = false;
+            while (ran < limit)
+            {
+                simB.WakeAll();
+                simA.Step(pa);
+                simB.Step(pb);
+                PublishAll(simA);
+                PublishAll(simB);
+                ran++;
+                moves += simA.Moves;
+                if (!SameCells(simA, pa, simB, pb)) { differ = true; break; }
+                if (sandOnly && simA.AwakeChunks() == 0) break;
+            }
+            if (differ) { diverged++; Fail("sand", k, "sleeping chunks changed the result after " + ran + " steps"); continue; }
+
+            bool conserved = simA.Count(SandSim.Sand) == nSand && simA.Count(SandSim.Water) == nWater && simA.Count(SandSim.Stone) == nStone;
+            for (int i = 0; i < plan.Length && conserved; i++)
+                if (plan[i] == SandSim.Stone && simA.Types[i] != SandSim.Stone) conserved = false;
+            if (!conserved) { lost++; Fail("sand", k, "grains were lost or made, or stone moved"); }
+
+            bool alphaOk = true;
+            for (int i = 0; i < plan.Length; i++)
+            {
+                int e = simA.Types[i], a = pa[i * 4 + 3];
+                bool ok = (e == SandSim.Air && a == 0) || (e == SandSim.Water && a == 200) || ((e == SandSim.Stone || e == SandSim.Sand) && a == 255);
+                if (!ok) alphaOk = false;
+            }
+            if (!alphaOk) { badAlpha++; Fail("sand", k, "a pixel does not say what its cell holds: colours did not move with the grains"); }
+
+            if (sandOnly)
+            {
+                sandCases++;
+                if (simA.AwakeChunks() != 0) { notAsleep++; Fail("sand", k, "sand alone did not come to rest in " + limit + " steps"); }
+                else
+                {
+                    if (SandUnsettled(simA) != 0) { notAtRest++; Fail("sand", k, "the chunks sleep but a grain could still move"); }
+                    for (int i = 0; i < 6; i++)
+                    {
+                        simA.Step(pa);
+                        PublishAll(simA);
+                    }
+                    if (simA.StaleChunks() != 0) { notPublished++; Fail("sand", k, "a settled chunk never published its ground"); }
+                }
+            }
+
+            // a Reset gives a fresh simulation: the same case run again (without the always-awake twin) must end the same
+            uint first = simA.Hash();
+            if (sandOnly) { }                              // (the extra steps above moved nothing)
+            byte[] pc = new byte[w * h * 4];
+            LoadSand(simA, pc, plan, seed, cw, ch, nx, ny, spread);
+            for (int i = 0; i < ran; i++)
+            {
+                simA.Step(pc);
+                PublishAll(simA);
+            }
+            bool again = simA.Hash() == first;
+            for (int i = 0; i < pc.Length && again; i++)
+                if (pc[i] != pa[i]) again = false;
+            if (!again) { notRepeatable++; Fail("sand", k, "the same case run again after a Reset ended differently"); }
+        }
+        Console.WriteLine("sand           " + cases + " cases (" + sandCases + " sand only), " + moves + " grain moves: " + diverged + " differ from the always-awake run, "
+                          + lost + " lost or made grains, " + badAlpha + " wrong pixels, " + notAsleep + " not asleep, " + notAtRest + " not at rest, " + notPublished
+                          + " unpublished, " + notRepeatable + " not repeatable");
+    }
+
     public static int Main()
     {
         Rng.Seed(1u);
@@ -344,6 +490,7 @@ static class PixelTerrainConformance
         TestChains(300);
         TestColumnOps(20000);
         TestEdits(300);
+        TestSand(150);
         if (failures == 0) Console.WriteLine("all tests passed");
         else Console.WriteLine("FAILURES: " + failures);
         return failures == 0 ? 0 : 1;

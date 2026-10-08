@@ -191,7 +191,13 @@ int gfx_window_open(int visible)
      * current on this thread and collides with the (EGL) one the renderer is using: an X error, and the process is gone. */
     if (!getenv("PROWL_SDL_ACCEL"))
         SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
-    g_win = SDL_CreateWindow("Prowl2D", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g_w, g_h,
+    int wx = SDL_WINDOWPOS_UNDEFINED, wy = SDL_WINDOWPOS_UNDEFINED;
+    {   /* PROWL_WINDOW_POS="x,y": where the window opens (the editor tiles its floating windows around it) */
+        const char *pos = getenv("PROWL_WINDOW_POS");
+        int px, py;
+        if (pos && sscanf(pos, "%d,%d", &px, &py) == 2) { wx = px; wy = py; }
+    }
+    g_win = SDL_CreateWindow("Prowl2D", wx, wy, g_w, g_h,
                              SDL_WINDOW_RESIZABLE | (visible ? SDL_WINDOW_SHOWN : SDL_WINDOW_HIDDEN));
     if (!g_win) {
         win_why("SDL_CreateWindow");

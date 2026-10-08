@@ -17,9 +17,14 @@ static class Engine
     static Scene2D scene;
     static int ready;
     static int sprites;
+    static Rigidbody2D[] bodies;           // a node's rigidbody by node index (set by AddBody), for velocities and impulses
+    static Shatter2D blaster;              // only used for its AddExplosionForce
+
+    static Rigidbody2D BodyAt(int i) { return bodies[i]; }
+    static void SetBodyAt(int i, Rigidbody2D rb) { bodies[i] = rb; }
 
     /// <summary>Bump when a function below changes its meaning: the host checks it.</summary>
-    public static int Version() { return 1; }
+    public static int Version() { return 4; }
 
     // ---- the process: renderer and scene -------------------------------------------------------------------------------------
 
@@ -32,6 +37,8 @@ static class Engine
         {
             Scripts.Init();
             scene = new Scene2D();
+            bodies = new Rigidbody2D[CoreLimits.Nodes];
+            blaster = new Shatter2D(scene, 1u);
         }
         ready = 1;
         return 1;
@@ -57,6 +64,7 @@ static class Engine
         if (ready == 0) return -1;
         Node n = scene.NewNode(null);
         if (n == null) return -1;
+        SetBodyAt(n.Index, null);
         return n.Index;
     }
 
@@ -158,6 +166,22 @@ static class Engine
         if (n == null) return 0;
         Rigidbody2D rb = scene.AddRigidbody(n, bodyType);
         if (rb == null) return 0;
+        SetBodyAt(node, rb);
+        return 1;
+    }
+
+    /// <summary>A rigidbody that does not rotate (freezeRotation 1: a character) and has the given gravity scale. 1 if it was added.</summary>
+    public static int AddBodyEx(int node, int bodyType, int freezeRotation, float gravityScale)
+    {
+        if (ready == 0) return 0;
+        Node n = scene.NodeAt(node);
+        if (n == null) return 0;
+        Rigidbody2D rb = scene.NewRigidbody(n, bodyType);
+        if (rb == null) return 0;
+        rb.FreezeRotation = freezeRotation != 0;
+        rb.GravityScale = gravityScale;
+        scene.Finish(rb.Self);
+        SetBodyAt(node, rb);
         return 1;
     }
 
@@ -171,6 +195,19 @@ static class Engine
         return 1;
     }
 
+    /// <summary>A box collider with the given friction (0: slides along walls).</summary>
+    public static int AddBoxEx(int node, float width, float height, float friction)
+    {
+        if (ready == 0) return 0;
+        Node n = scene.NodeAt(node);
+        if (n == null) return 0;
+        Collider2D c = scene.NewBoxCollider(n, width, height);
+        if (c == null) return 0;
+        c.Friction = friction;
+        scene.Finish(c.Self);
+        return 1;
+    }
+
     public static int AddCircle(int node, float radius)
     {
         if (ready == 0) return 0;
@@ -179,6 +216,47 @@ static class Engine
         Collider2D c = scene.AddCircleCollider(n, radius);
         if (c == null) return 0;
         return 1;
+    }
+
+    /// <summary>Sets a body's linear velocity (units per second).</summary>
+    public static void SetVelocity(int node, float vx, float vy)
+    {
+        if (ready == 0 || node < 0 || node >= CoreLimits.Nodes) return;
+        Rigidbody2D rb = BodyAt(node);
+        if (rb == null || scene.NodeAt(node) == null) return;
+        rb.SetVelocity(vx, vy);
+    }
+
+    /// <summary>Applies an instant impulse (mass times velocity change) to a body.</summary>
+    public static void Impulse(int node, float ix, float iy)
+    {
+        if (ready == 0 || node < 0 || node >= CoreLimits.Nodes) return;
+        Rigidbody2D rb = BodyAt(node);
+        if (rb == null || scene.NodeAt(node) == null) return;
+        rb.AddImpulse(ix, iy);
+    }
+
+    public static float VelocityX(int node)
+    {
+        if (ready == 0 || node < 0 || node >= CoreLimits.Nodes) return 0f;
+        Rigidbody2D rb = BodyAt(node);
+        if (rb == null || scene.NodeAt(node) == null) return 0f;
+        return rb.VelocityX();
+    }
+
+    public static float VelocityY(int node)
+    {
+        if (ready == 0 || node < 0 || node >= CoreLimits.Nodes) return 0f;
+        Rigidbody2D rb = BodyAt(node);
+        if (rb == null || scene.NodeAt(node) == null) return 0f;
+        return rb.VelocityY();
+    }
+
+    /// <summary>An explosion at (x, y): pushes every body within radius away, the more the closer (Shatter2D.AddExplosionForce). Returns how many it pushed.</summary>
+    public static int Blast(float x, float y, float radius, float force)
+    {
+        if (ready == 0) return 0;
+        return blaster.AddExplosionForce(x, y, radius, force, 0f);
     }
 
     public static void Gravity(float x, float y)

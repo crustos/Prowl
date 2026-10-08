@@ -96,11 +96,13 @@ def record(every):
     code = ("    public static int Code(int x, int y)\n    {\n        int e = rock.Sand.ElementAt(x, y);\n        if (e == SandSim.Sand) return 2;\n"
             "        if (e == SandSim.Water) return 3;\n        if (rock.IsSolid(x, y)) return 1;\n        return 0;\n    }\n\n")
     assert anchor in s
-    open(p, "w", encoding="utf-8").write(s.replace(anchor, code + anchor, 1))
+    if "int Code(" not in s:
+        s = s.replace(anchor, code + anchor, 1)
+    open(p, "w", encoding="utf-8").write(s)
     open(os.path.join(game, "Rec.cs"), "w", encoding="utf-8").write(REC.replace("EVERY", str(every)))
     p = os.path.join(game, "Game.cs")
     s = open(p, encoding="utf-8").read()
-    anchor = "            Scripts.Tick(scene, Cfg.Dt);\n"
+    anchor = "            World.Tick();\n"
     assert anchor in s
     open(p, "w", encoding="utf-8").write(s.replace(anchor, anchor + "            Rec.Frame(scene, frame, player);\n", 1))
     out = os.path.join(work, "pkg")

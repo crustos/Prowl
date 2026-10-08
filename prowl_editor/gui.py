@@ -8,14 +8,17 @@
 
 Everything edits one Project (model.py) held by the Studio, which also owns the selection and the undo stack and tells the windows what changed.
 """
+import copy
 import os
 import re
+import time
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from . import asciiart, fileio
 from .engine import Engine, EngineError, Viewport
+from .gui_fx import ParamForm
 from .gui_widgets import (LevelCanvas, MappingDialog, PixelCanvas, TileDialog, emoji_font, error_box, sprite_pixmap, swatch_icon)
 from .model import Level, Project, ProjectError, Sprite, TileDef, color_hex
 
@@ -26,6 +29,27 @@ PNG_FILTER = "PNG textures (*.png);;All files (*)"
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------
 # the shared state
+
+def _default_values(name):
+    """The default values of the effect `name` as the project keeps them (an enum as its index, a bool as a bool, ...)."""
+    from .fxdefs import EFFECTS
+    from .fx import defaults
+    d = defaults(name)
+    return {p["name"]: _clean(p, d[p["name"]]) for p in EFFECTS[name]["params"]}
+
+
+def _clean(p, value):
+    """What a parameter's value is kept as in the project: a float for a float, int, bool or enum (a label is turned into its index), four floats for a color."""
+    from .fx import _floats
+    f = _floats(p, value)
+    if p["type"] == "color":
+        return f
+    if p["type"] == "bool":
+        return bool(f[0])
+    if p["type"] in ("int", "enum"):
+        return int(f[0])
+    return f[0]
+
 
 class Studio(QtCore.QObject):
     """The project being edited, what is selected in it, and the undo stack. `changed(kind)` tells the windows what to refresh:
@@ -38,6 +62,8 @@ class Studio(QtCore.QObject):
 
     def __init__(self, project):
         super().__init__()
+        self._merge = None
+        self.light = -1                   # the selected light of the current level (an index), or -1
         self.set_project(project, emit=False)
 
     def set_project(self, project, emit=True):
@@ -47,6 +73,7 @@ class Studio(QtCore.QObject):
         self.tile = next(iter(project.tiles), None)
         self.color = 1 if len(project.palette) > 1 else 0
         self.undo, self.redo = [], []
+        self.light = -1
         if emit:
             self.changed.emit("all")
 
@@ -59,7 +86,7 @@ class Studio(QtCore.QObject):
     def _snap(obj):
         if isinstance(obj, Sprite):
             return (obj.width, obj.height, [bytes(f) for f in obj.frames])
-        return (obj.width, obj.height, list(obj.cells))
+        return (obj.width, obj.height, list(obj.cells), copy.deepcopy(obj.effects), copy.deepcopy(obj.lights), copy.deepcopy(obj.lighting))
 
     @staticmethod
     def _restore(obj, snap):
@@ -68,16 +95,20 @@ class Studio(QtCore.QObject):
             obj.frames = [bytearray(f) for f in snap[2]]
         else:
             obj.cells = list(snap[2])
+            obj.effects = copy.deepcopy(snap[3])
+            obj.lights, obj.lighting = copy.deepcopy(snap[4]), copy.deepcopy(snap[5])
 
     def checkpoint(self, obj):
         """Call BEFORE changing a sprite or level: one call is one undo step."""
         self.undo.append((obj, self._snap(obj)))
         del self.undo[:-self.UNDO_LIMIT]
         self.redo.clear()
+        self._merge = None
 
     def _step(self, src, dst):
         if not src:
             return
+        self.light = -1
         obj, snap = src.pop()
         dst.append((obj, self._snap(obj)))
         self._restore(obj, snap)
@@ -89,15 +120,160 @@ class Studio(QtCore.QObject):
     def do_redo(self):
         self._step(self.redo, self.undo)
 
+    # ---- the effects over the current level (one undo step each; a slider's drag is one step, see set_effect_value)
+    def _fx_list(self):
+        return self.level.effects if self.level is not None else None
+
+    def add_effect(self, name):
+        """Adds the effect `name` (fxdefs.EFFECTS) with its default values at the end of the level's stack. Returns its index, or -1."""
+        from .fxdefs import EFFECTS
+        if self.level is None or name not in EFFECTS:
+            return -1
+        self.checkpoint(self.level)
+        self.level.effects.append({"effect": name, "values": _default_values(name), "enabled": True})
+        self.edited("level")
+        return len(self.level.effects) - 1
+
+    def remove_effect(self, i):
+        fx = self._fx_list()
+        if fx is None or not 0 <= i < len(fx):
+            return
+        self.checkpoint(self.level)
+        del fx[i]
+        self.edited("level")
+
+    def duplicate_effect(self, i):
+        fx = self._fx_list()
+        if fx is None or not 0 <= i < len(fx):
+            return -1
+        self.checkpoint(self.level)
+        fx.insert(i + 1, copy.deepcopy(fx[i]))
+        self.edited("level")
+        return i + 1
+
+    def move_effect(self, i, delta):
+        """Moves the effect at i up (delta -1) or down (+1) the stack. Returns its new index."""
+        fx = self._fx_list()
+        j = i + delta
+        if fx is None or not (0 <= i < len(fx) and 0 <= j < len(fx)):
+            return i
+        self.checkpoint(self.level)
+        fx[i], fx[j] = fx[j], fx[i]
+        self.edited("level")
+        return j
+
+    def set_effect_enabled(self, i, on):
+        fx = self._fx_list()
+        if fx is None or not 0 <= i < len(fx) or fx[i]["enabled"] == bool(on):
+            return
+        self.checkpoint(self.level)
+        fx[i]["enabled"] = bool(on)
+        self.edited("level")
+
+    def reset_effect(self, i):
+        fx = self._fx_list()
+        if fx is None or not 0 <= i < len(fx):
+            return
+        self.checkpoint(self.level)
+        fx[i]["values"] = _default_values(fx[i]["effect"])
+        self.edited("level")
+
+    def set_effect_value(self, i, param, value):
+        """Sets one parameter. The value is checked (fx.pack: a number is brought into its range, a NaN or an unknown parameter is refused with ValueError/KeyError).
+        Changes to the same parameter within a second of each other are one undo step, so a slider's drag is one. Returns the value as stored."""
+        from .fx import pack
+        fx = self._fx_list()
+        if fx is None or not 0 <= i < len(fx):
+            return None
+        e = fx[i]
+        pack(e["effect"], {param: value})                   # raises for what cannot be stored
+        from .fxdefs import EFFECTS
+        p = next(q for q in EFFECTS[e["effect"]]["params"] if q["name"] == param)
+        stored = list(_clean(p, value)) if p["type"] == "color" else _clean(p, value)
+        key, now = (id(self.level), i, param), time.monotonic()
+        if not (self._merge and self._merge[0] == key and now - self._merge[1] < 1.0):
+            self.checkpoint(self.level)
+        self._merge = (key, now)
+        e["values"][param] = stored
+        self.edited("effects")
+        return stored
+
+    # ---- the lights of the current level (lights.py); a drag or a slider is one undo step, as with the effects
+    def _merged(self, key):
+        """True when this edit continues the last one (same thing, within a second): no new undo step."""
+        now = time.monotonic()
+        same = self._merge is not None and self._merge[0] == key and now - self._merge[1] < 1.0
+        if not same:
+            self.checkpoint(self.level)
+        self._merge = (key, now)
+
+    def add_light(self, kind="point", x=None, y=None):
+        """Adds a light (at the middle of the level unless x, y are given, in cells). Returns its index, or -1 (no level, or MAX_LIGHTS reached)."""
+        from . import lights as L
+        lv = self.level
+        if lv is None or len(lv.lights) >= L.MAX_LIGHTS or kind not in L.KINDS:
+            return -1
+        self.checkpoint(lv)
+        lv.lights.append(L.new_light(kind, lv.width / 2.0 if x is None else x, lv.height / 2.0 if y is None else y))
+        self.light = len(lv.lights) - 1
+        self.edited("level")
+        return self.light
+
+    def remove_light(self, i):
+        lv = self.level
+        if lv is None or not 0 <= i < len(lv.lights):
+            return
+        self.checkpoint(lv)
+        del lv.lights[i]
+        self.light = min(self.light, len(lv.lights) - 1) if self.light >= i else self.light
+        self.edited("level")
+
+    def set_light(self, i, **values):
+        """Sets some of light i's values ({kind, x, y, radius, intensity, color, angle, cone, softness, enabled}), checked and brought into range
+        (ValueError for what cannot be stored). Returns the light."""
+        from . import lights as L
+        lv = self.level
+        if lv is None or not 0 <= i < len(lv.lights):
+            return None
+        new = L.clean_light(dict(lv.lights[i], **values))
+        if new == lv.lights[i]:
+            return new
+        self._merged((id(lv), "light", i, tuple(sorted(values))))
+        lv.lights[i] = new
+        self.edited("lights")
+        return new
+
+    def set_lighting(self, **values):
+        """Sets some of the level-wide values ({enabled, ambient, falloff, glow, exposure})."""
+        from . import lights as L
+        lv = self.level
+        if lv is None:
+            return None
+        new = L.clean_lighting(dict(lv.lighting, **values))
+        if new == lv.lighting:
+            return new
+        self._merged((id(lv), "lighting", tuple(sorted(values))))
+        lv.lighting = new
+        self.edited("lights")
+        return new
+
     # ---- selection
     def select_sprite(self, sprite):
         if sprite is not self.sprite:
             self.sprite = sprite
             self.changed.emit("selection")
 
+    def select_light(self, i):
+        lv = self.level
+        i = i if lv is not None and 0 <= i < len(lv.lights) else -1
+        if i != self.light:
+            self.light = i
+            self.changed.emit("lightsel")
+
     def select_level(self, level):
         if level is not self.level:
             self.level = level
+            self.light = -1
             self.changed.emit("selection")
 
     def select_tile(self, emoji):
@@ -162,6 +338,8 @@ class Studio(QtCore.QObject):
         src = self.level
         lv = Level(src.name + " copy", src.width, src.height)
         lv.cells = list(src.cells)
+        lv.effects = copy.deepcopy(src.effects)
+        lv.lights, lv.lighting = copy.deepcopy(src.lights), copy.deepcopy(src.lighting)
         self.level = self.project.add_level(lv)
         self.edited("structure")
 
@@ -767,7 +945,7 @@ class LevelEditorWindow(Floating):
         mid = QtWidgets.QHBoxLayout()
         left = QtWidgets.QVBoxLayout()
         self.tool_group = QtWidgets.QButtonGroup(self)
-        for i, (key, label) in enumerate((("paint", "Paint"), ("erase", "Erase"), ("fill", "Fill"), ("pick", "Pick tile"))):
+        for i, (key, label) in enumerate((("paint", "Paint"), ("erase", "Erase"), ("fill", "Fill"), ("pick", "Pick tile"), ("light", "Lights"))):
             b = QtWidgets.QToolButton()
             b.setText(label)
             b.setCheckable(True)
@@ -825,6 +1003,8 @@ class LevelEditorWindow(Floating):
             self.canvas.fit_size()
             self.refresh_tiles()
             self.refresh_text()
+        elif kind in ("lights", "lightsel"):
+            self.canvas.update()
 
     def refresh_all(self):
         lv = self.studio.level
@@ -1065,7 +1245,7 @@ class ProjectWindow(QtWidgets.QMainWindow):
         self.levels.itemDoubleClicked.connect(lambda _: self.show_window("levels"))
         lay.addWidget(self.levels)
         row = QtWidgets.QHBoxLayout()
-        for text, key in (("Palette", "palette"), ("Sprite Editor", "sprites"), ("Level Editor", "levels")):
+        for text, key in (("Palette", "palette"), ("Sprite Editor", "sprites"), ("Level Editor", "levels"), ("Effects", "effects"), ("Lights", "lights")):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(lambda _=False, k=key: self.show_window(k))
             row.addWidget(b)
@@ -1115,6 +1295,8 @@ class ProjectWindow(QtWidgets.QMainWindow):
         self._action(w, "Palette", lambda: self.show_window("palette"))
         self._action(w, "Sprite Editor", lambda: self.show_window("sprites"))
         self._action(w, "Level Editor", lambda: self.show_window("levels"))
+        self._action(w, "Effects", lambda: self.show_window("effects"))
+        self._action(w, "Lights", lambda: self.show_window("lights"))
         self._action(w, "Viewport (SDL)", self.viewport.open)
 
     def show_window(self, key):
@@ -1339,8 +1521,261 @@ class ProjectWindow(QtWidgets.QMainWindow):
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------------------------------------------------------------------------------
+# the effects panel
+
+class EffectsWindow(Floating):
+    """The picture effects over the current level: a stack (first to last, each can be switched off), and the controls of the selected one. The viewport applies the
+    stack to what it draws, live. Every change goes through the Studio, so it is saved with the project and can be undone."""
+
+    def __init__(self, studio):
+        super().__init__(studio, "Effects", (780, 460))
+        from .fxdefs import EFFECTS
+        lay = QtWidgets.QHBoxLayout(self)
+        left = QtWidgets.QVBoxLayout()
+        self.title = QtWidgets.QLabel()
+        left.addWidget(self.title)
+        self.stack = QtWidgets.QListWidget()
+        self.stack.currentRowChanged.connect(self._row)
+        self.stack.itemChanged.connect(self._checked)
+        left.addWidget(self.stack, 1)
+        self.add_button = QtWidgets.QToolButton()
+        self.add_button.setText("Add effect")
+        self.add_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        menu = QtWidgets.QMenu(self.add_button)
+        groups = {}
+        for name, e in sorted(EFFECTS.items(), key=lambda kv: (kv[1]["group"], kv[1]["id"])):
+            if e.get("hidden"):
+                continue                  # (an effect another window drives: scene_lights is the Lights window's)
+            groups.setdefault(e["group"] or "Other", menu.addMenu(e["group"] or "Other")).addAction(
+                e["title"], lambda _=False, n=name: self._add(n))
+        self.add_button.setMenu(menu)
+        row = QtWidgets.QGridLayout()
+        row.addWidget(self.add_button, 0, 0)
+        self.buttons = {}
+        for key, text, fn in (("up", "Up", lambda: self._move(-1)), ("down", "Down", lambda: self._move(1)), ("dup", "Duplicate", self._dup),
+                              ("del", "Remove", self._remove), ("reset", "Reset", self._reset)):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            row.addWidget(b, *divmod(len(self.buttons) + 1, 3))
+            self.buttons[key] = b
+        left.addLayout(row)
+        lay.addLayout(left, 2)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.form = ParamForm()
+        self.form.edited.connect(self._edited)
+        scroll.setWidget(self.form)
+        lay.addWidget(scroll, 3)
+        self._busy = False
+        self.refresh()
+
+    def on_changed(self, kind):
+        if kind in ("all", "selection", "level", "structure"):
+            self.refresh()
+
+    def _index(self):
+        return self.stack.currentRow()
+
+    def refresh(self, keep=None):
+        from .fxdefs import EFFECTS
+        lv = self.studio.level
+        row = self._index() if keep is None else keep
+        self._busy = True
+        self.stack.clear()
+        effects = lv.effects if lv is not None else []
+        self.title.setText("Level: %s" % lv.name if lv is not None else "No level")
+        for e in effects:
+            it = QtWidgets.QListWidgetItem(EFFECTS[e["effect"]]["title"])
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if e["enabled"] else Qt.Unchecked)
+            self.stack.addItem(it)
+        if effects:
+            self.stack.setCurrentRow(min(max(row, 0), len(effects) - 1))
+        self._busy = False
+        self._row(self.stack.currentRow())
+
+    def _row(self, i):
+        if self._busy:
+            return
+        lv = self.studio.level
+        entry = lv.effects[i] if lv is not None and 0 <= i < len(lv.effects) else None
+        self.form.set_entry(entry)
+        self.form.setEnabled(entry is not None)
+        n = len(lv.effects) if lv is not None else 0
+        for k in self.buttons:
+            self.buttons[k].setEnabled(entry is not None)
+        self.buttons["up"].setEnabled(entry is not None and i > 0)
+        self.buttons["down"].setEnabled(entry is not None and i < n - 1)
+        self.add_button.setEnabled(lv is not None)
+
+    def _checked(self, item):
+        if not self._busy:
+            self.studio.set_effect_enabled(self.stack.row(item), item.checkState() == Qt.Checked)
+
+    def _edited(self, name, value):
+        try:
+            self.studio.set_effect_value(self._index(), name, value)
+        except (KeyError, ValueError) as e:
+            self.studio.message.emit("effect: %s" % e)
+
+    def _add(self, name):
+        i = self.studio.add_effect(name)
+        if i >= 0:
+            self.refresh(keep=i)
+
+    def _move(self, d):
+        i = self.studio.move_effect(self._index(), d)
+        self.refresh(keep=i)
+
+    def _dup(self):
+        i = self.studio.duplicate_effect(self._index())
+        if i >= 0:
+            self.refresh(keep=i)
+
+    def _remove(self):
+        i = self._index()
+        self.studio.remove_effect(i)
+        self.refresh(keep=i)
+
+    def _reset(self):
+        self.studio.reset_effect(self._index())
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------------
+# the lights panel
+
+class LightsWindow(Floating):
+    """The lights of the current level: what they light over (ambient color, falloff, glow, exposure) and each light (point or spot) with its place, radius, color and
+    so on. In the level editor the Lights tool places, selects and drags them on the level itself. The viewport lights its picture with them, live (up to 8)."""
+
+    def __init__(self, studio):
+        from . import lights as L
+        super().__init__(studio, "Lights", (780, 560))
+        self.L = L
+        lay = QtWidgets.QVBoxLayout(self)
+        top = QtWidgets.QHBoxLayout()
+        self.title = QtWidgets.QLabel()
+        top.addWidget(self.title, 1)
+        self.enabled = QtWidgets.QCheckBox("Lighting on")
+        self.enabled.toggled.connect(lambda on: None if self._busy else studio.set_lighting(enabled=bool(on)))
+        top.addWidget(self.enabled)
+        lay.addLayout(top)
+        self.lighting = ParamForm()
+        self.lighting.edited.connect(lambda n, v: studio.set_lighting(**{n: v}))
+        lay.addWidget(self.lighting)
+        mid = QtWidgets.QHBoxLayout()
+        left = QtWidgets.QVBoxLayout()
+        self.list = QtWidgets.QListWidget()
+        self.list.currentRowChanged.connect(lambda i: None if self._busy else studio.select_light(i))
+        self.list.itemChanged.connect(self._checked)
+        left.addWidget(self.list, 1)
+        row = QtWidgets.QGridLayout()
+        self.buttons = {}
+        for n, (key, text, fn) in enumerate((("point", "Add point", lambda: studio.add_light("point")), ("spot", "Add spot", lambda: studio.add_light("spot")),
+                                             ("del", "Remove", lambda: studio.remove_light(studio.light)))):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            row.addWidget(b, n // 2, n % 2)
+            self.buttons[key] = b
+        left.addLayout(row)
+        mid.addLayout(left, 2)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.form = ParamForm()
+        self.form.edited.connect(self._edited)
+        scroll.setWidget(self.form)
+        mid.addWidget(scroll, 3)
+        lay.addLayout(mid, 1)
+        self.hint = QtWidgets.QLabel("Level editor, Lights tool: click to add a light, drag one to move it, right-click to remove it.")
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+        self._busy = False
+        self._editing = False
+        self.refresh()
+
+    def on_changed(self, kind):
+        if kind in ("all", "selection", "level", "structure"):
+            self.refresh()
+        elif kind == "lightsel" or (kind == "lights" and not self._editing):     # (a drag on the level moved the light: show its new place)
+            self._select_row()
+
+    def _specs(self):
+        lv = self.studio.level
+        specs = [dict(p) for p in self.L.LIGHT_SPECS]
+        for p in specs:
+            if p["name"] == "x":
+                p["max"] = float(lv.width)
+            elif p["name"] == "y":
+                p["max"] = float(lv.height)
+        return specs
+
+    def refresh(self):
+        lv = self.studio.level
+        self._busy = True
+        self.title.setText("Level: %s" % lv.name if lv is not None else "No level")
+        self.list.clear()
+        for n, l in enumerate(lv.lights if lv is not None else []):
+            it = QtWidgets.QListWidgetItem("%s light %d" % (l["kind"].capitalize(), n + 1))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if l["enabled"] else Qt.Unchecked)
+            self.list.addItem(it)
+        if lv is not None:
+            self.enabled.setChecked(lv.lighting["enabled"])
+            self.lighting.set_entry({"effect": "scene_lights", "values": lv.lighting}, only=self.L.LIGHTING_PARAMS)
+        self._busy = False
+        self._select_row()
+
+    def _select_row(self):
+        lv = self.studio.level
+        i = self.studio.light
+        self._busy = True
+        self.list.setCurrentRow(i if i >= 0 else -1)
+        self._busy = False
+        light = lv.lights[i] if lv is not None and 0 <= i < len(lv.lights) else None
+        if light is None:
+            self.form.set_specs([], {})
+        else:
+            self.form.set_specs(self._specs(), dict(light, kind=self.L.KINDS.index(light["kind"])))
+            self._spot_only(light["kind"] == "spot")
+        self.form.setEnabled(light is not None)
+        self.buttons["del"].setEnabled(light is not None)
+        self.buttons["point"].setEnabled(lv is not None and len(lv.lights) < self.L.MAX_LIGHTS)
+        self.buttons["spot"].setEnabled(self.buttons["point"].isEnabled())
+
+    def _spot_only(self, on):
+        for name in ("angle", "cone", "softness"):
+            w = self.form.widgets.get(name)
+            if w is not None:
+                w.setEnabled(on)
+                if w.parentWidget() is not None and w.parentWidget() is not self.form:
+                    w.parentWidget().setEnabled(on)
+
+    def _checked(self, item):
+        if not self._busy:
+            self.studio.set_light(self.list.row(item), enabled=item.checkState() == Qt.Checked)
+
+    def _edited(self, name, value):
+        i = self.studio.light
+        self._editing = True
+        try:
+            if name == "kind":
+                self.studio.set_light(i, kind=self.L.KINDS[int(value)])
+                QtCore.QTimer.singleShot(0, self.refresh)        # (not now: the combo box that sent this would be deleted while it is still running)
+            else:
+                self.studio.set_light(i, **{name: value})
+        except ValueError as e:
+            self.studio.message.emit("light: %s" % e)
+        finally:
+            self._editing = False
+
+    def sync_values(self):
+        """Re-reads the selected light's values into the controls (after a drag on the level)."""
+        self._select_row()
+
+
 def create_windows(studio):
-    windows = {"palette": PaletteWindow(studio), "sprites": SpriteEditorWindow(studio), "levels": LevelEditorWindow(studio)}
+    windows = {"palette": PaletteWindow(studio), "sprites": SpriteEditorWindow(studio), "levels": LevelEditorWindow(studio), "effects": EffectsWindow(studio), "lights": LightsWindow(studio)}
     main = ProjectWindow(studio, windows)
     return main, windows
 
@@ -1360,8 +1795,12 @@ def tile_windows(main, windows):
         windows["sprites"].move(x0 + 10, y0 + 560)
         windows["levels"].resize(1425, 560)
         windows["levels"].move(x0 + 1120, y0 + 560)
+        windows["effects"].move(x0 + 1530, y0 + 30)
+        windows["lights"].move(x0 + 1530, y0 + 520)
         return
     main.move(20, 40)
     windows["palette"].move(460, 40)
     windows["sprites"].move(20, 300)
     windows["levels"].move(340, 120)
+    windows["effects"].move(640, 200)
+    windows["lights"].move(700, 260)

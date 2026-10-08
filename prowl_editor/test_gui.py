@@ -406,3 +406,175 @@ class Palette_(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Effects(Base):
+    def test_add_edit_reorder_disable_duplicate_remove_and_undo_each(self):
+        st, lv = self.studio, self.studio.level
+        self.assertEqual(lv.effects, [])
+        self.assertEqual(st.add_effect("blend"), 0)
+        self.assertEqual(st.add_effect("tint"), 1)
+        self.assertEqual(st.add_effect("nope"), -1)
+        self.assertEqual(lv.effects[0]["values"]["mode"], 1)               # an enum is kept as its index, not as a float
+        self.assertEqual(st.set_effect_value(1, "amount", 0.8), 0.8)
+        self.assertEqual(st.set_effect_value(0, "mode", "Screen"), 8)       # a label is accepted
+        self.assertEqual(st.set_effect_value(0, "opacity", 7), 1.0)         # brought into its range
+        with self.assertRaises(KeyError):
+            st.set_effect_value(0, "nope", 1)
+        with self.assertRaises(ValueError):
+            st.set_effect_value(0, "opacity", float("nan"))
+        self.assertEqual(st.move_effect(1, -1), 0)
+        self.assertEqual([e["effect"] for e in lv.effects], ["tint", "blend"])
+        st.set_effect_enabled(0, False)
+        self.assertFalse(lv.effects[0]["enabled"])
+        self.assertEqual(st.duplicate_effect(1), 2)
+        st.remove_effect(0)
+        self.assertEqual([e["effect"] for e in lv.effects], ["blend", "blend"])
+        for _ in range(4):                                                  # remove, duplicate, disable, move
+            st.do_undo()
+        self.assertEqual([e["effect"] for e in lv.effects], ["blend", "tint"])
+        self.assertTrue(lv.effects[0]["enabled"])
+        st.do_redo()
+        self.assertEqual([e["effect"] for e in lv.effects], ["tint", "blend"])
+
+    def test_a_drag_on_one_parameter_is_one_undo_step(self):
+        st = self.studio
+        st.add_effect("tint")
+        for v in (0.1, 0.2, 0.3, 0.4):
+            st.set_effect_value(0, "amount", v)
+        st.set_effect_value(0, "color", [0, 0, 1, 1])
+        st.do_undo()                                                         # the color
+        self.assertEqual(st.level.effects[0]["values"]["amount"], 0.4)
+        st.do_undo()                                                         # the whole drag of amount
+        self.assertEqual(st.level.effects[0]["values"]["amount"], 0.5)
+
+    def test_the_window_lists_the_stack_and_its_controls_edit_the_values(self):
+        st, win = self.studio, self.windows["effects"]
+        win.show()
+        for name in ("tint", "bright_contrast"):
+            win._add(name)
+        self.assertEqual(win.stack.count(), 2)
+        win.stack.setCurrentRow(0)
+        spin = win.form.widgets["amount"]
+        spin.setValue(0.9)
+        self.assertEqual(st.level.effects[0]["values"]["amount"], 0.9)
+        win.form.widgets["color"].set_color([0.2, 0.3, 0.4, 1.0])           # (what the color dialog does)
+        win.form.widgets["color"].changed.emit([0.2, 0.3, 0.4, 1.0])
+        self.assertEqual(st.level.effects[0]["values"]["color"], [0.2, 0.3, 0.4, 1.0])
+        win.stack.item(1).setCheckState(Qt.Unchecked)
+        self.assertFalse(st.level.effects[1]["enabled"])
+        win.stack.setCurrentRow(1)
+        self.assertEqual(set(win.form.widgets), {"brightness", "contrast"})
+        self.assertFalse(win.buttons["down"].isEnabled())
+        win._move(-1)
+        self.assertEqual([e["effect"] for e in st.level.effects], ["bright_contrast", "tint"])
+        self.assertEqual(win.stack.currentRow(), 0)
+        st.do_undo()                                                         # the panel follows an undo
+        self.assertEqual(win.stack.item(0).text(), "Tint")
+
+    def test_effects_are_saved_with_the_project_and_a_copied_level_keeps_them(self):
+        st = self.studio
+        st.add_effect("blend")
+        st.set_effect_value(0, "mode", "Overlay")
+        st.duplicate_level()
+        self.assertEqual(st.level.effects, st.project.levels[0].effects)
+        self.assertIsNot(st.level.effects, st.project.levels[0].effects)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "p.json")
+            st.project.save(path)
+            back = Project.load(path)
+        self.assertEqual(back.levels[0].effects[0]["values"]["mode"], 12)
+        self.assertEqual(len(back.levels), len(st.project.levels))
+
+
+class Lights(Base):
+    def test_add_edit_undo_and_the_limit(self):
+        from . import lights as L
+        st, lv = self.studio, self.studio.level
+        self.assertEqual(st.add_light("point", 3, 2), 0)
+        self.assertEqual(st.add_light("spot"), 1)
+        self.assertEqual((lv.lights[1]["x"], lv.lights[1]["y"]), (lv.width / 2.0, lv.height / 2.0))
+        self.assertEqual(st.add_light("laser"), -1)
+        self.assertEqual(st.light, 1)
+        for v in (4.0, 5.0, 6.0):                                       # a drag: one undo step
+            st.set_light(0, x=v, y=2.5)
+        self.assertEqual((lv.lights[0]["x"], lv.lights[0]["y"]), (6.0, 2.5))
+        st.do_undo()
+        self.assertEqual((lv.lights[0]["x"], lv.lights[0]["y"]), (3.0, 2.0))
+        self.assertEqual(st.set_light(0, intensity=50)["intensity"], 4.0)
+        with self.assertRaises(ValueError):
+            st.set_light(0, intensity=float("nan"))
+        st.set_lighting(glow=0.9)
+        self.assertEqual(lv.lighting["glow"], 0.9)
+        st.do_undo()
+        self.assertEqual(lv.lighting["glow"], 0.15)
+        st.remove_light(0)
+        self.assertEqual(len(lv.lights), 1)
+        st.do_undo()
+        self.assertEqual(len(lv.lights), 2)
+        while len(lv.lights) < L.MAX_LIGHTS:
+            st.add_light("point")
+        self.assertEqual(st.add_light("point"), -1)
+
+    def test_the_lights_tool_adds_selects_drags_and_removes_on_the_level(self):
+        st, canvas = self.studio, self.levels.canvas
+        canvas.tool = "light"
+        c = canvas.cell
+        QTest.mouseClick(canvas, Qt.LeftButton, Qt.NoModifier, QtCore.QPoint(5 * c, 4 * c))      # empty: a new light, there
+        lv = st.level
+        self.assertEqual(len(lv.lights), 1)
+        self.assertAlmostEqual(lv.lights[0]["x"], 5.0, places=1)
+        drag(canvas, QtCore.QPoint(5 * c, 4 * c), QtCore.QPoint(9 * c, 6 * c))                  # on the light: move it
+        self.assertEqual(len(lv.lights), 1)
+        self.assertAlmostEqual(lv.lights[0]["x"], 9.0, places=1)
+        self.assertAlmostEqual(lv.lights[0]["y"], 6.0, places=1)
+        drag(canvas, QtCore.QPoint(9 * c, 6 * c), QtCore.QPoint(10000, 10000))                  # dragged off the level: kept inside it
+        self.assertEqual((lv.lights[0]["x"], lv.lights[0]["y"]), (float(lv.width), float(lv.height)))
+        self.assertEqual(lv.cells.count(""), len(lv.cells) - sum(1 for g in lv.cells if g))     # (the tool never paints tiles)
+        before = list(lv.cells)
+        QTest.mouseClick(canvas, Qt.RightButton, Qt.NoModifier, QtCore.QPoint(lv.width * c, lv.height * c))
+        self.assertEqual(lv.lights, [])
+        self.assertEqual(lv.cells, before)
+        st.do_undo()
+        self.assertEqual(len(lv.lights), 1)
+
+    def test_the_window_lists_the_lights_and_its_controls_edit_them(self):
+        st, win = self.studio, self.windows["lights"]
+        win.show()
+        win.buttons["spot"].click()
+        win.buttons["point"].click()
+        self.assertEqual(win.list.count(), 2)
+        win.list.setCurrentRow(0)
+        self.assertEqual(st.light, 0)
+        self.assertTrue(win.form.widgets["cone"].isEnabled())
+        win.form.widgets["radius"].setValue(7.5)
+        self.assertEqual(st.level.lights[0]["radius"], 7.5)
+        win.form.widgets["kind"].setCurrentIndex(0)                                 # a point light has no direction or cone
+        _app.processEvents()
+        self.assertEqual(st.level.lights[0]["kind"], "point")
+        self.assertFalse(win.form.widgets["cone"].isEnabled())
+        win.lighting.widgets["glow"].setValue(0.6)
+        self.assertEqual(st.level.lighting["glow"], 0.6)
+        win.list.item(1).setCheckState(Qt.Unchecked)
+        self.assertFalse(st.level.lights[1]["enabled"])
+        win.enabled.setChecked(False)
+        self.assertFalse(st.level.lighting["enabled"])
+        st.set_light(0, x=2.0)                                                       # moved elsewhere (the level editor): the controls follow
+        self.assertEqual(win.form.widgets["x"].value(), 2.0)
+        win.buttons["del"].click()
+        self.assertEqual(win.list.count(), 1)
+
+    def test_lights_are_saved_and_a_copied_level_keeps_them(self):
+        st = self.studio
+        st.add_light("spot", 4, 3)
+        st.set_lighting(exposure=2.0)
+        st.duplicate_level()
+        self.assertEqual(st.level.lights, st.project.levels[0].lights)
+        self.assertIsNot(st.level.lights, st.project.levels[0].lights)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "p.json")
+            st.project.save(path)
+            back = Project.load(path)
+        self.assertEqual(back.levels[0].lights[0]["kind"], "spot")
+        self.assertEqual(back.levels[0].lighting["exposure"], 2.0)
+

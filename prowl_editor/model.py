@@ -12,8 +12,11 @@ A project is JSON on disk and these classes in memory:
 In JSON a sprite frame is a list of strings, one per row, written with the palette's keys (so a project file reads like the ASCII art it can be exported
 as), and a level is a list of strings, one per row, of emoji. Loading checks them, and refuses what it cannot understand with a message that says where.
 """
+import copy
 import json
 import re
+
+from .lights import DEFAULT_LIGHTING, clean_light, clean_lighting
 
 FORMAT = "prowl2d-project"
 VERSION = 1
@@ -324,6 +327,9 @@ class Level:
         self.width = width
         self.height = height
         self.cells = [""] * (width * height)   # row by row from the top; "" is empty, otherwise an emoji
+        self.lights = []    # the lights in the level (lights.py)
+        self.lighting = copy.deepcopy(DEFAULT_LIGHTING)   # ...and what they light over: {"enabled", "ambient", "falloff", "glow", "exposure"}
+        self.effects = []   # the picture effects over the level, first to last: {"effect": name, "values": {parameter: value}, "enabled": bool} (fx.py, fxdefs.py)
 
     def check_size(self, width, height):
         if not (1 <= width <= MAX_LEVEL_SIDE and 1 <= height <= MAX_LEVEL_SIDE):
@@ -367,6 +373,45 @@ class Level:
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------
 # the project
+
+def _effects_from_json(items, where):
+    """A level's "effects" list, checked against the effect registry: an unknown effect or parameter, or a value that cannot be stored, is an error that names it."""
+    from .fx import pack
+    if not isinstance(items, list):
+        raise ProjectError("%s: effects must be a list" % where)
+    out = []
+    for n, item in enumerate(items):
+        at = "%s.effects[%d]" % (where, n)
+        if not isinstance(item, dict) or "effect" not in item:
+            raise ProjectError("%s: expected {effect, values}" % at)
+        values = item.get("values", {})
+        if not isinstance(values, dict):
+            raise ProjectError("%s: values must be an object" % at)
+        try:
+            pack(item["effect"], values)
+        except (KeyError, ValueError, TypeError) as e:
+            raise ProjectError("%s: %s" % (at, str(e).strip("'\"")))
+        out.append({"effect": item["effect"], "values": dict(values), "enabled": bool(item.get("enabled", True))})
+    return out
+
+
+def _lights_from_json(item, where):
+    """A level's "lights" and "lighting", checked and brought into range; an error names the place."""
+    lights = item.get("lights", [])
+    if not isinstance(lights, list):
+        raise ProjectError("%s: lights must be a list" % where)
+    out = []
+    for n, l in enumerate(lights):
+        try:
+            out.append(clean_light(l))
+        except ValueError as e:
+            raise ProjectError("%s.lights[%d]: %s" % (where, n, e))
+    try:
+        lighting = clean_lighting(item.get("lighting", DEFAULT_LIGHTING))
+    except ValueError as e:
+        raise ProjectError("%s.lighting: %s" % (where, e))
+    return out, lighting
+
 
 class Project:
     def __init__(self, name="untitled"):
@@ -467,9 +512,18 @@ class Project:
             "sprites": [s.to_json(self.palette) for s in self.sprites],
             "empty": self.empty,
             "tiles": [t.to_json() for t in self.tiles.values()],
-            "levels": [{"name": l.name, "rows": ["".join(l.get(x, y) or self.empty for x in range(l.width)) for y in range(l.height)]}
-                       for l in self.levels],
+            "levels": [self._level_json(l) for l in self.levels],
         }
+
+    def _level_json(self, l):
+        d = {"name": l.name, "rows": ["".join(l.get(x, y) or self.empty for x in range(l.width)) for y in range(l.height)]}
+        if l.lights or l.lighting != DEFAULT_LIGHTING:
+            d["lighting"] = copy.deepcopy(l.lighting)
+        if l.lights:
+            d["lights"] = copy.deepcopy(l.lights)
+        if l.effects:
+            d["effects"] = [{"effect": e["effect"], "values": dict(e["values"]), "enabled": bool(e.get("enabled", True))} for e in l.effects]
+        return d
 
     @staticmethod
     def from_json(data):
@@ -503,6 +557,8 @@ class Project:
                     if g not in p.tiles:
                         raise ProjectError("%s: row %d, column %d: %s is not a tile of this project" % (where, y + 1, x + 1, g))
                     lv.cells[y * width + x] = g
+            lv.lights, lv.lighting = _lights_from_json(item, where)
+            lv.effects = _effects_from_json(item.get("effects", []), where)
             p.levels.append(lv)
         return p
 

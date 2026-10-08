@@ -3,7 +3,10 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
+from . import fx
+from .fxdefs import BY_ID, EFFECTS, PARAM_FLOATS
 from .asciiart import (emoji_for_name, export_level, export_levels, export_sprite, export_sprites, import_levels, import_sprites, level_from_text,
                        level_to_text, natural_name, parse_level_text, scan_sprite_text, split_graphemes)
 from .demo import make_demo_project
@@ -1095,5 +1098,206 @@ class UnityScenes(UnityFiles):
         self.assertEqual([l.name for l in self.project.levels], ["Twice", "Twice 2"])
 
 
+class Effects(unittest.TestCase):
+    """The effect registry as Python sees it (fxdefs.py is generated from src/native/gfx2d/fx/*.fx) and how values are packed for gfx_effect."""
+
+    def test_registry_is_consistent(self):
+        self.assertTrue(EFFECTS)
+        self.assertEqual(len({e["id"] for e in EFFECTS.values()}), len(EFFECTS))
+        for name, e in EFFECTS.items():
+            self.assertEqual(BY_ID[e["id"]], name)
+            for p in e["params"]:
+                self.assertLessEqual(p["offset"] + p["size"], PARAM_FLOATS)
+                self.assertEqual(len(p["default"]), p["size"])
+                if p["type"] == "color":
+                    self.assertEqual(p["offset"] % 4, 0, "a color is read as one vec4 on the GPU")
+                else:
+                    self.assertTrue(p["min"] <= p["default"][0] <= p["max"])
+
+    def test_defaults_when_nothing_is_given(self):
+        eid, floats = fx.pack("tint")
+        self.assertEqual(eid, EFFECTS["tint"]["id"])
+        self.assertEqual(len(floats), PARAM_FLOATS)
+        self.assertEqual(floats[:5], [1.0, 0.5, 0.1, 1.0, 0.5])      # the colour, then the amount: what tint.fx says
+        self.assertEqual(fx.defaults("bright_contrast"), {"brightness": 0.0, "contrast": 0.0})
+
+    def test_values_land_where_the_registry_says(self):
+        _, floats = fx.pack("bright_contrast", {"contrast": 0.25})
+        self.assertEqual(floats[:2], [0.0, 0.25])
+        _, floats = fx.pack("tint", {"color": (0.2, 0.4, 0.6), "amount": 1.0})
+        self.assertEqual(floats[:5], [0.2, 0.4, 0.6, 1.0, 1.0])        # three numbers: alpha 1
+
+    def test_values_are_brought_into_range(self):
+        _, floats = fx.pack("bright_contrast", {"brightness": 9, "contrast": -9})
+        self.assertEqual(floats[:2], [1.0, -1.0])
+        _, floats = fx.pack("tint", {"color": (2, -1, 0.5, 7)})
+        self.assertEqual(floats[:4], [1.0, 0.0, 0.5, 1.0])
+
+    def test_refusals(self):
+        with self.assertRaises(KeyError):
+            fx.pack("no_such_effect")
+        with self.assertRaises(KeyError):
+            fx.pack("tint", {"hue": 1})
+        with self.assertRaises(ValueError):
+            fx.pack("tint", {"amount": float("nan")})
+        with self.assertRaises(ValueError):
+            fx.pack("tint", {"color": (1, 2)})
+
+    def test_int_bool_and_enum_parameters(self):
+        demo = {"id": 200, "title": "Demo", "group": "", "nparams": 3, "params": [
+            {"name": "steps", "type": "int", "label": "Steps", "offset": 0, "size": 1, "min": 1.0, "max": 8.0, "default": [4.0]},
+            {"name": "flip", "type": "bool", "label": "Flip", "offset": 1, "size": 1, "min": 0.0, "max": 1.0, "default": [0.0]},
+            {"name": "mode", "type": "enum", "label": "Mode", "offset": 2, "size": 1, "min": 0.0, "max": 2.0, "default": [0.0], "options": ["Add", "Mul", "Screen"]}]}
+        with mock.patch.dict(EFFECTS, {"demo": demo}):
+            _, floats = fx.pack("demo", {"steps": 2.6, "flip": True, "mode": "Screen"})
+            self.assertEqual(floats[:3], [3.0, 1.0, 2.0])               # an int is rounded, a bool is 0 or 1, an enum may be named by its label
+            _, floats = fx.pack("demo", {"steps": 99, "mode": 1})
+            self.assertEqual(floats[:3], [8.0, 0.0, 1.0])
+            with self.assertRaises(ValueError):
+                fx.pack("demo", {"mode": "Divide"})
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class LevelEffects(unittest.TestCase):
+    def project(self):
+        from .model import Level, Project
+        p = Project("fx")
+        lv = p.add_level(Level("a", 3, 2))
+        lv.effects = [{"effect": "blend", "values": {"mode": 12, "color": [0.1, 0.2, 0.3, 0.4], "opacity": 0.5}, "enabled": False},
+                      {"effect": "levels", "values": {"gamma": 2.0}, "enabled": True}]
+        p.add_level(Level("b", 2, 2))
+        return p
+
+    def test_effects_survive_the_json_round_trip_and_a_level_without_any_writes_none(self):
+        from .model import Project
+        p = self.project()
+        data = p.to_json()
+        self.assertNotIn("effects", data["levels"][1])
+        back = Project.from_json(json.loads(json.dumps(data)))
+        self.assertEqual(back.levels[0].effects, p.levels[0].effects)
+        self.assertEqual(back.levels[1].effects, [])
+
+    def test_a_project_with_a_bad_effect_is_refused_with_the_place(self):
+        from .model import Project, ProjectError
+        good = self.project().to_json()
+        for what, edit in (("an unknown effect", lambda e: e.update(effect="nope")),
+                           ("an unknown parameter", lambda e: e.update(values={"nope": 1})),
+                           ("a value that is not a number", lambda e: e.update(values={"gamma": "x"})),
+                           ("effects that are not a list", None)):
+            data = json.loads(json.dumps(good))
+            if edit:
+                edit(data["levels"][0]["effects"][1])
+            else:
+                data["levels"][0]["effects"] = {}
+            with self.assertRaises(ProjectError, msg=what) as cm:
+                Project.from_json(data)
+            self.assertIn("levels[0]", str(cm.exception), what)
+
+
+class ViewportEffects(unittest.TestCase):
+    """The viewport hands the level's enabled effects to the engine in order (the engine is a recorder here, so no library is needed)."""
+
+    def test_enabled_effects_are_queued_in_order_and_bad_entries_skipped(self):
+        from .engine import Viewport
+        from .model import Level, Project
+        calls = []
+
+        class Recorder:
+            def effect(self, name, values=None):
+                from .fx import pack
+                pack(name, values)
+                calls.append((name, values))
+
+        lv = Level("l", 2, 2)
+        lv.effects = [{"effect": "tint", "values": {"amount": 0.3}, "enabled": True},
+                      {"effect": "blend", "values": {}, "enabled": False},
+                      {"effect": "gone", "values": {}, "enabled": True},
+                      {"effect": "levels", "values": {"gamma": 2.0}}]
+        vp = Viewport(Recorder(), Project())
+        vp._apply_effects(lv)
+        vp._apply_effects(None)
+        self.assertEqual(calls, [("tint", {"amount": 0.3}), ("levels", {"gamma": 2.0})])
+
+
+class LevelLights(unittest.TestCase):
+    def level(self):
+        from .model import Level
+        lv = Level("l", 10, 6)
+        from . import lights as L
+        lv.lights = [L.new_light("point", 2, 1), L.new_light("spot", 8, 4)]
+        lv.lights[1]["enabled"] = False
+        return lv
+
+    def test_lights_and_lighting_round_trip_and_a_plain_level_writes_neither(self):
+        from .model import Level, Project
+        p = Project("p")
+        lv = p.add_level(self.level())
+        lv.lighting["glow"] = 0.4
+        p.add_level(Level("plain", 2, 2))
+        data = json.loads(json.dumps(p.to_json()))
+        self.assertNotIn("lights", data["levels"][1])
+        self.assertNotIn("lighting", data["levels"][1])
+        back = Project.from_json(data)
+        self.assertEqual(back.levels[0].lights, lv.lights)
+        self.assertEqual(back.levels[0].lighting, lv.lighting)
+        self.assertEqual(back.levels[1].lights, [])
+
+    def test_bad_lights_are_refused_with_the_place_and_numbers_are_brought_into_range(self):
+        from .model import Project, ProjectError
+        p = Project("p")
+        p.add_level(self.level())
+        good = p.to_json()
+        for what, edit in (("an unknown kind", lambda d: d["lights"][0].update(kind="laser")), ("a NaN", lambda d: d["lights"][0].update(x=float("nan"))),
+                           ("a color of two numbers", lambda d: d["lights"][0].update(color=[1, 1])), ("lights not a list", lambda d: d.update(lights={}))):
+            data = json.loads(json.dumps(good, allow_nan=True))
+            edit(data["levels"][0])
+            with self.assertRaises(ProjectError, msg=what) as cm:
+                Project.from_json(data)
+            self.assertIn("levels[0]", str(cm.exception), what)
+        data = json.loads(json.dumps(good))
+        data["levels"][0]["lights"][0]["intensity"] = 99
+        self.assertEqual(Project.from_json(data).levels[0].lights[0]["intensity"], 4.0)
+
+    def test_the_effect_values_follow_the_camera(self):
+        from . import lights as L
+        from .fx import pack
+        lv = self.level()
+        lv.lights[1]["enabled"] = True
+        # a camera on the level's middle (5, 3) that sees 3 cells up and down and is 5/3 as wide as high
+        v = L.effect_values(lv, 5.0, 3.0, 3.0, 5.0 / 3.0)
+        self.assertAlmostEqual(v["l0x"], (2 - 5) / (2 * 3 * 5 / 3) + 0.5)       # 3 cells left of the middle: 0.2
+        self.assertAlmostEqual(v["l0y"], 0.5 - ((6 - 1) - 3) / 6.0)              # the level's row 1 is 2 cells above the middle: y 1/6 from the top
+        self.assertAlmostEqual(v["l0r"], 4 / 6.0)
+        self.assertEqual((v["l0t"], v["l1t"]), (0, 1))
+        self.assertEqual(pack("scene_lights", v)[0], 16)
+        panned = L.effect_values(lv, 6.0, 3.0, 3.0, 5.0 / 3.0)                   # the camera moved right: the light moves left on the screen
+        self.assertLess(panned["l0x"], v["l0x"])
+        lv.lights[1]["enabled"] = False
+        self.assertNotIn("l1x", L.effect_values(lv, 5.0, 3.0, 3.0, 5.0 / 3.0))
+        lv.lights[0]["enabled"] = False
+        self.assertIsNone(L.effect_values(lv, 5.0, 3.0, 3.0, 5.0 / 3.0))
+        lv.lights[0]["enabled"] = True
+        lv.lighting["enabled"] = False
+        self.assertIsNone(L.effect_values(lv, 5.0, 3.0, 3.0, 5.0 / 3.0))
+
+    def test_the_viewport_hands_the_lights_to_the_engine_before_the_effects(self):
+        from .engine import Viewport
+        from .model import Project
+        calls = []
+
+        class Recorder:
+            def effect(self, name, values=None):
+                from .fx import pack
+                pack(name, values)
+                calls.append(name)
+
+        lv = self.level()
+        lv.effects = [{"effect": "tint", "values": {}, "enabled": True}]
+        vp = Viewport(Recorder(), Project())
+        vp._apply_lights(lv)
+        vp._apply_effects(lv)
+        self.assertEqual(calls, ["scene_lights", "tint"])
+

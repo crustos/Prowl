@@ -1,4 +1,6 @@
 """gui_widgets.py: the pieces the editor's windows are made of: the pixel canvas, the tile-map canvas, small dialogs. PyQt5 only; no engine here."""
+import math
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
@@ -197,6 +199,7 @@ class LevelCanvas(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self._painting = None
         self._last = None
+        self._drag_light = -1
         self._icons = {}
         self._icon_rev = None
         self.fit_size()
@@ -261,6 +264,75 @@ class LevelCanvas(QtWidgets.QWidget):
             p.drawLine(x * c, y0 * c, x * c, y1 * c)
         for y in range(y0, y1 + 1):
             p.drawLine(x0 * c, y * c, x1 * c, y * c)
+        self._paint_lights(p, lv)
+
+    LIGHT_MARK = 7                      # the radius in pixels of a light's marker
+
+    def _light_pos(self, l):
+        return QtCore.QPointF(l["x"] * self.cell, l["y"] * self.cell)
+
+    def _paint_lights(self, p, lv):
+        """Each light as a dot in its color with a ring of its radius (a spot also shows its cone); the selected one has a white outline."""
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        for i, l in enumerate(lv.lights):
+            ctr = self._light_pos(l)
+            col = QtGui.QColor.fromRgbF(*l["color"][:3])
+            ring = QtGui.QColor(col)
+            ring.setAlpha(150 if l["enabled"] else 50)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QtGui.QPen(ring, 1, Qt.DashLine))
+            rad = l["radius"] * self.cell
+            if l["kind"] == "spot":
+                a, cone = l["angle"], l["cone"]
+                for edge in (a - cone, a + cone):
+                    p.drawLine(ctr, ctr + QtCore.QPointF(rad * math.cos(math.radians(edge)), -rad * math.sin(math.radians(edge))))
+                box = QtCore.QRectF(ctr.x() - rad, ctr.y() - rad, 2 * rad, 2 * rad)
+                p.drawArc(box, int((a - cone) * 16), int(2 * cone * 16))
+            else:
+                p.drawEllipse(ctr, rad, rad)
+            sel = i == self.studio.light
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255) if sel else QtGui.QColor(20, 20, 24), 2 if sel else 1))
+            col.setAlpha(255 if l["enabled"] else 90)
+            p.setBrush(col)
+            p.drawEllipse(ctr, self.LIGHT_MARK, self.LIGHT_MARK)
+            if l["kind"] == "spot":
+                a = math.radians(l["angle"])
+                p.drawLine(ctr, ctr + QtCore.QPointF(2.2 * self.LIGHT_MARK * math.cos(a), -2.2 * self.LIGHT_MARK * math.sin(a)))
+        p.setRenderHint(QtGui.QPainter.Antialiasing, False)
+
+    def light_at(self, pos):
+        """The index of the light whose marker is under `pos` (the nearest, within a few pixels of it), or -1."""
+        lv = self.level()
+        best, best_d = -1, (self.LIGHT_MARK + 4) ** 2
+        for i, l in enumerate(lv.lights if lv is not None else []):
+            ctr = self._light_pos(l)
+            d = (ctr.x() - pos.x()) ** 2 + (ctr.y() - pos.y()) ** 2
+            if d <= best_d:
+                best, best_d = i, d
+        return best
+
+    def _light_press(self, e):
+        lv = self.level()
+        i = self.light_at(e.pos())
+        if e.button() == Qt.RightButton:
+            if i >= 0:
+                self.studio.remove_light(i)
+            return
+        if i < 0:                                        # an empty place: a new light there
+            i = self.studio.add_light("point", e.pos().x() / self.cell, e.pos().y() / self.cell)
+        else:
+            self.studio.select_light(i)
+        self._drag_light = i
+        self._drag_off = (0.0, 0.0) if i < 0 else (lv.lights[i]["x"] - e.pos().x() / self.cell, lv.lights[i]["y"] - e.pos().y() / self.cell)
+
+    def _light_move(self, e):
+        lv = self.level()
+        i = self._drag_light
+        if lv is None or not 0 <= i < len(lv.lights):
+            return
+        x = min(max(e.pos().x() / self.cell + self._drag_off[0], 0.0), float(lv.width))
+        y = min(max(e.pos().y() / self.cell + self._drag_off[1], 0.0), float(lv.height))
+        self.studio.set_light(i, x=x, y=y)
 
     def cell_at(self, pos):
         lv = self.level()
@@ -284,6 +356,10 @@ class LevelCanvas(QtWidgets.QWidget):
         return True
 
     def mousePressEvent(self, e):
+        if self.tool == "light":
+            if e.button() in (Qt.LeftButton, Qt.RightButton):
+                self._light_press(e)
+            return
         c = self.cell_at(e.pos())
         if c is None or e.button() not in (Qt.LeftButton, Qt.RightButton):
             return
@@ -295,6 +371,10 @@ class LevelCanvas(QtWidgets.QWidget):
         self.update()
 
     def mouseMoveEvent(self, e):
+        if self.tool == "light":
+            if self._drag_light >= 0:
+                self._light_move(e)
+            return
         c = self.cell_at(e.pos())
         lv = self.level()
         if c is not None and lv is not None:
@@ -313,6 +393,7 @@ class LevelCanvas(QtWidgets.QWidget):
 
     def mouseReleaseEvent(self, e):
         self._painting = None
+        self._drag_light = -1
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------

@@ -3,12 +3,13 @@
 The engine API tests need only the library (EGL renders without a display); the viewport tests also need a display (xvfb-run python3 -m unittest ...) and are skipped
 without one. Everything is skipped, with the reason, if the library is not built:  python3 tools/prowl2d_so.py
 """
+import array
 import os
 import unittest
 
 from .demo import make_demo_project
 from .slime_demo import SlimeDriver, make_slime_project
-from .engine import (BODY_DYNAMIC, BODY_STATIC, BTN_LEFT, EV_MOUSE_DOWN, EV_WHEEL, KEY_HOME, Engine, EngineError, Viewport, find_library)
+from .engine import (BODY_DYNAMIC, BODY_STATIC, BTN_LEFT, EV_MOUSE_DOWN, EV_WHEEL, KEY_HOME, Engine, EngineError, Viewport, find_library, floats_ptr)
 
 W, H = 800, 480           # the renderer's picture is made once per process, at the size it is first started with
 _engine = None
@@ -146,6 +147,59 @@ class EngineApi(unittest.TestCase):
         self.assertEqual(e.gfx_inject_event(EV_WHEEL, 10, 20, 0, 120), 1)
         self.assertEqual(_engine.poll_event(), (EV_WHEEL, 10, 20, 0, 120))
         self.assertIsNone(_engine.poll_event())
+
+
+class Effects(unittest.TestCase):
+    """gfx_effect through Engine.effect: an effect changes the picture drawn before it, inside the clip, and nothing drawn after it."""
+
+    def setUp(self):
+        ensure_started()
+        self.e = _engine.lib
+
+    def box(self, x, grey):
+        """A square 4 world units wide, centred at (x, 0), of one grey (the camera below shows 10 units over the picture's height: 48 pixels to the unit)."""
+        return array.array("f", [x, 0.0, 2.0, 2.0, 0.0, grey, grey, grey, 1.0, 0.0, 0.0, 0.0])
+
+    def pixel(self, wx):
+        return rgb(self.e.gfx_pixel(int(W / 2 + wx * (H / 10.0)), H // 2))
+
+    def test_an_effect_changes_what_was_drawn_before_it_and_not_what_comes_after(self):
+        e = self.e
+        e.gfx_camera(0.0, 0.0, 5.0, 0.0, 0.0, 0.0)
+        e.gfx_begin()
+        before, after = self.box(-4.0, 0.2), self.box(4.0, 0.2)
+        e.gfx_sprites(floats_ptr(before), 1)
+        self.assertTrue(_engine.effect("bright_contrast", {"brightness": 0.3}))
+        e.gfx_sprites(floats_ptr(after), 1)
+        e.gfx_end()
+        for got, want in zip(self.pixel(-4.0), (128, 128, 128)):          # 0.2 + 0.3 = 0.5
+            self.assertAlmostEqual(got, want, delta=2)
+        for got, want in zip(self.pixel(4.0), (51, 51, 51)):              # drawn after the effect: 0.2 as it was
+            self.assertAlmostEqual(got, want, delta=1)
+        for got, want in zip(rgb(e.gfx_pixel(5, H - 5)), (77, 77, 77)):   # the background, black, is brightened as well
+            self.assertAlmostEqual(got, want, delta=2)
+
+    def test_an_effect_stays_inside_the_clip(self):
+        e = self.e
+        e.gfx_camera(0.0, 0.0, 5.0, 0.0, 0.0, 0.0)
+        e.gfx_begin()
+        b = self.box(0.0, 0.2)
+        e.gfx_sprites(floats_ptr(b), 1)
+        e.gfx_clip(W // 2, 0, W // 2, H)                                   # the right half only
+        _engine.effect("bright_contrast", {"brightness": 0.3})
+        e.gfx_clip_reset()
+        e.gfx_end()
+        left, right = rgb(e.gfx_pixel(W // 2 - 20, H // 2)), rgb(e.gfx_pixel(W // 2 + 20, H // 2))
+        for got, want in zip(left, (51, 51, 51)):
+            self.assertAlmostEqual(got, want, delta=1)
+        for got, want in zip(right, (128, 128, 128)):
+            self.assertAlmostEqual(got, want, delta=2)
+
+    def test_what_the_api_refuses(self):
+        self.assertEqual(self.e.gfx_effect(999, None, 0), 0)
+        self.assertEqual(self.e.gfx_effect(0, None, 0), 0)
+        with self.assertRaises(KeyError):
+            _engine.effect("no_such_effect")
 
 
 @unittest.skipUnless(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"), "needs a display (run under xvfb-run)")

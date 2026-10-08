@@ -17,8 +17,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from . import asciiart, fileio
-from .engine import Engine, EngineError, Viewport
+from .engine import SAND_NAMES, Engine, EngineError, SandSettings, Viewport
+from . import scriptbuild
 from .gui_fx import ParamForm
+from .gui_scripts import CodeEditor
 from .gui_widgets import (LevelCanvas, MappingDialog, PixelCanvas, TileDialog, emoji_font, error_box, sprite_pixmap, swatch_icon)
 from .model import Level, Project, ProjectError, Sprite, TileDef, color_hex
 
@@ -56,12 +58,14 @@ class Studio(QtCore.QObject):
     'all' (another project), 'structure' (sprites, levels or tiles added, removed, renamed), 'selection', 'pixels', 'level', 'palette'."""
     changed = QtCore.pyqtSignal(str)
     viewport_requested = QtCore.pyqtSignal()
+    sand_changed = QtCore.pyqtSignal()
     message = QtCore.pyqtSignal(str)
 
     UNDO_LIMIT = 100
 
     def __init__(self, project):
         super().__init__()
+        self.sand = SandSettings()          # the viewport's sand (engine.SandSettings); the Sand window edits it
         self._merge = None
         self.light = -1                   # the selected light of the current level (an index), or -1
         self.set_project(project, emit=False)
@@ -256,6 +260,52 @@ class Studio(QtCore.QObject):
         lv.lighting = new
         self.edited("lights")
         return new
+
+    # ---- the project's scripts (C# files). Their text is edited in the code editor's own undo; attaching is by class name.
+    def add_script(self, name, text=None):
+        """A new script file (a template with a [Script] class of the same name unless `text` is given). Returns it."""
+        from .model import SCRIPT_TEMPLATE, ScriptFile
+        name = scriptbuild.file_name(name.strip() or "Script")
+        taken = {f.name for f in self.project.scripts}
+        base, n = name, 2
+        while name in taken or name in self.project.script_classes():
+            name = "%s%d" % (base, n)
+            n += 1
+        f = ScriptFile(name, SCRIPT_TEMPLATE % {"name": name} if text is None else text)
+        self.project.scripts.append(f)
+        self.edited("scripts")
+        return f
+
+    def delete_script(self, name):
+        f = self.project.script_file(name)
+        if f is None:
+            return
+        gone = set(f.classes())
+        self.project.scripts.remove(f)
+        self.project.game_scripts = [c for c in self.project.game_scripts if c not in gone]
+        for sp in self.project.sprites:
+            sp.scripts = [c for c in sp.scripts if c not in gone]
+        self.edited("scripts")
+
+    def set_script_text(self, name, text):
+        f = self.project.script_file(name)
+        if f is None or f.text == text:
+            return
+        f.text = text
+        self.project.dirty = True              # (no touch(): typing must not make the viewport rebuild its textures)
+        self.changed.emit("scripttext")
+
+    def set_sprite_script(self, sprite, cls, on):
+        names = [c for c in sprite.scripts if c != cls] + ([cls] if on else [])
+        if names != sprite.scripts:
+            sprite.scripts = names
+            self.edited("scripts")
+
+    def set_game_script(self, cls, on):
+        names = [c for c in self.project.game_scripts if c != cls] + ([cls] if on else [])
+        if names != self.project.game_scripts:
+            self.project.game_scripts = names
+            self.edited("scripts")
 
     # ---- selection
     def select_sprite(self, sprite):
@@ -1173,13 +1223,15 @@ class ViewportController(QtCore.QObject):
         self.driver_factory = None       # a callable making the object that plays the level in the viewport (slime_demo.SlimeDriver)
         self.autoplay = False            # start in play mode as soon as the window is open
         self.window_pos = None           # (x, y) where the SDL window opens, or None to let the system place it
+        self.engine_path = None          # the library in use (None: the one find_library finds); the code editor's Build makes a new one
 
     def open(self):
         try:
             if self.engine is None:
-                self.engine = Engine()
+                self.engine = Engine(self.engine_path)
             if self.vp is None:
                 self.vp = Viewport(self.engine, self.studio.project, 800, 480)
+                self.vp.sand = self.studio.sand
             if self.vp.is_open:
                 return True
             if self.window_pos:
@@ -1195,13 +1247,39 @@ class ViewportController(QtCore.QObject):
             QtWidgets.QMessageBox.warning(self.parent_widget, "Viewport", str(e))
             return False
         self.timer.start(16)
-        self.studio.message.emit("viewport: P play/edit, click drops a ball, wheel zooms, right-drag pans, Home refits, Esc closes")
+        self.studio.message.emit("viewport: P play/edit, click drops a ball (S: sand, left button paints), wheel zooms, right-drag pans, Home refits, Esc closes")
         return True
 
     def close(self):
         self.timer.stop()
         if self.vp is not None and self.engine is not None and self.vp.is_open:
             self.vp.close()
+
+    def reload(self, lib):
+        """Switches to the engine library `lib` (a build with new scripts): the graphics window is closed, the old library shut down and let go, the new one loaded, and the
+        window opened again where it was (the same camera, playing again if it was). Returns True if it worked."""
+        was_open = self.vp is not None and self.engine is not None and self.vp.is_open
+        state = None if self.vp is None else (self.vp.cx, self.vp.cy, self.vp.half, self.vp.playing)
+        self.timer.stop()
+        if self.vp is not None and self.engine is not None and self.engine.started:
+            self.vp.close()
+        if self.engine is not None:
+            self.engine.unload()
+        self.engine, self.vp = None, None
+        self.engine_path = lib
+        try:
+            self.engine = Engine(lib)
+        except EngineError as e:
+            QtWidgets.QMessageBox.warning(self.parent_widget, "Build", str(e))
+            return False
+        if was_open:
+            if not self.open():
+                return False
+            if state is not None:
+                self.vp.cx, self.vp.cy, self.vp.half = state[:3]
+                if state[3] and not self.vp.playing:
+                    self.vp.toggle_play()
+        return True
 
     def _tick(self):
         if self.vp is None or not self.vp.tick():
@@ -1245,7 +1323,7 @@ class ProjectWindow(QtWidgets.QMainWindow):
         self.levels.itemDoubleClicked.connect(lambda _: self.show_window("levels"))
         lay.addWidget(self.levels)
         row = QtWidgets.QHBoxLayout()
-        for text, key in (("Palette", "palette"), ("Sprite Editor", "sprites"), ("Level Editor", "levels"), ("Effects", "effects"), ("Lights", "lights")):
+        for text, key in (("Palette", "palette"), ("Sprite Editor", "sprites"), ("Level Editor", "levels"), ("Effects", "effects"), ("Lights", "lights"), ("Sand", "sand"), ("Scripts", "scripts")):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(lambda _=False, k=key: self.show_window(k))
             row.addWidget(b)
@@ -1297,6 +1375,8 @@ class ProjectWindow(QtWidgets.QMainWindow):
         self._action(w, "Level Editor", lambda: self.show_window("levels"))
         self._action(w, "Effects", lambda: self.show_window("effects"))
         self._action(w, "Lights", lambda: self.show_window("lights"))
+        self._action(w, "Sand", lambda: self.show_window("sand"))
+        self._action(w, "Scripts (code editor)", lambda: self.show_window("scripts"))
         self._action(w, "Viewport (SDL)", self.viewport.open)
 
     def show_window(self, key):
@@ -1774,9 +1854,353 @@ class LightsWindow(Floating):
         self._select_row()
 
 
+class SandWindow(Floating):
+    """Falling sand and water in the viewport, simulated by the GPU (compute shaders, Native/Gfx2D/gfx2d_sand.inc): switch it on, pick what the left mouse button
+    paints in the viewport, and watch it fall. The level's solid tiles are stone to it. It is a picture: balls and bodies do not touch it."""
+
+    def __init__(self, studio):
+        super().__init__(studio, "Sand", (330, 420))
+        self.controller = None            # the ViewportController, set by create_windows: only for the grain counts
+        st = studio.sand
+        lay = QtWidgets.QVBoxLayout(self)
+        self.enabled = QtWidgets.QCheckBox("Sand on (S in the viewport)")
+        self.enabled.toggled.connect(lambda on: self._set("enabled", bool(on)))
+        lay.addWidget(self.enabled)
+        box = QtWidgets.QGroupBox("Left mouse button paints")
+        row = QtWidgets.QHBoxLayout(box)
+        self.group = QtWidgets.QButtonGroup(self)
+        self.element_buttons = {}
+        for el, name in ((2, "Sand"), (3, "Water"), (1, "Stone"), (0, "Erase")):
+            b = QtWidgets.QRadioButton(name)
+            b.toggled.connect(lambda on, el=el: self._set("element", el) if on else None)
+            self.group.addButton(b)
+            row.addWidget(b)
+            self.element_buttons[el] = b
+        lay.addWidget(box)
+        form = QtWidgets.QFormLayout()
+        self.radius = self._spin(1, 40, "radius", form, "Brush radius (cells)  [ ]")
+        self.speed = self._spin(1, 16, "speed", form, "Steps a frame")
+        self.scale = self._spin(1, 32, "scale", form, "Cells to a tile")
+        lay.addLayout(form)
+        self.solid = QtWidgets.QCheckBox("The level's solid tiles are stone")
+        self.solid.toggled.connect(lambda on: (self._set("solid_stone", bool(on)), self._restart()))
+        lay.addWidget(self.solid)
+        row2 = QtWidgets.QHBoxLayout()
+        self.pause = QtWidgets.QPushButton("Pause")
+        self.pause.setCheckable(True)
+        self.pause.toggled.connect(lambda on: self._set("paused", bool(on)))
+        row2.addWidget(self.pause)
+        clear = QtWidgets.QPushButton("Clear")
+        clear.clicked.connect(self._restart)
+        row2.addWidget(clear)
+        lay.addLayout(row2)
+        self.counts = QtWidgets.QLabel()
+        self.counts.setTextFormat(Qt.PlainText)
+        lay.addWidget(self.counts)
+        self.note = QtWidgets.QLabel("Open the viewport, then paint with the left button. 1 stone, 2 sand, 3 water, 0 erase, Space pauses, C clears.")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        lay.addStretch(1)
+        self._busy = False
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(400)
+        studio.sand_changed.connect(self.refresh)
+        self.refresh()
+
+    def _spin(self, lo, hi, attr, form, label):
+        sp = QtWidgets.QSpinBox()
+        sp.setRange(lo, hi)
+        sp.valueChanged.connect(lambda v: self._set(attr, int(v), restart=(attr == "scale")))
+        form.addRow(label, sp)
+        return sp
+
+    def _set(self, attr, value, restart=False):
+        if self._busy:
+            return
+        setattr(self.studio.sand, attr, value)
+        if restart:
+            self._restart()
+        self.studio.sand_changed.emit()
+
+    def _restart(self):
+        self.studio.sand.generation += 1
+
+    def refresh(self):
+        st = self.studio.sand
+        self._busy = True
+        try:
+            self.enabled.setChecked(st.enabled)
+            self.element_buttons[st.element].setChecked(True)
+            for sp, v in ((self.radius, st.radius), (self.speed, st.speed), (self.scale, st.scale)):
+                sp.setValue(v)
+            self.solid.setChecked(st.solid_stone)
+            self.pause.setChecked(st.paused)
+        finally:
+            self._busy = False
+        vp = self.controller.vp if self.controller is not None else None
+        if st.error:
+            self.counts.setText(st.error)
+        elif vp is not None and vp.is_open and st.enabled and not st.paused:
+            sand, water, stone = vp.sand_counts()
+            self.counts.setText("grains: %d sand, %d water, %d stone" % (sand, water, stone))
+        elif vp is None or not vp.is_open:
+            self.counts.setText("the viewport is not open")
+
+
+class ScriptsWindow(Floating):
+    """The code editor: the project's C# scripts, which sprites and the game attach by class name. Build (F5) translates the engine and the scripts to C, links a new engine
+    library and swaps it in: the graphics window closes and opens again on the new one. Errors come back with their line (the problems list; double-click to go there)."""
+
+    def __init__(self, studio):
+        super().__init__(studio, "Scripts", (980, 640))
+        self.controller = None                 # the ViewportController, set by create_windows
+        self.builder = scriptbuild.Builder()
+        self.process = None
+        self.last_result = None
+        self._classes = []
+        self.built = None                      # the scripts' text as of the last good build: [(name, text)]
+        self._busy = False
+        self._open = None                      # the name of the file in the editor
+        lay = QtWidgets.QVBoxLayout(self)
+        bar = QtWidgets.QHBoxLayout()
+        for text, fn in (("New script", self.new_script), ("Delete", self.delete_script)):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            bar.addWidget(b)
+        bar.addStretch(1)
+        self.status = QtWidgets.QLabel()
+        bar.addWidget(self.status)
+        self.build_button = QtWidgets.QPushButton("Build && reload   F5")
+        self.build_button.clicked.connect(lambda: self.build())
+        bar.addWidget(self.build_button)
+        lay.addLayout(bar)
+        QtWidgets.QShortcut(QtGui.QKeySequence("F5"), self).activated.connect(lambda: self.build())
+
+        split = QtWidgets.QSplitter(Qt.Horizontal)
+        left = QtWidgets.QWidget()
+        ll = QtWidgets.QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.addWidget(QtWidgets.QLabel("Files"))
+        self.files = QtWidgets.QListWidget()
+        self.files.currentRowChanged.connect(self._pick_file)
+        ll.addWidget(self.files, 2)
+        ll.addWidget(QtWidgets.QLabel("Runs on the sprite:"))
+        self.sprite_box = QtWidgets.QComboBox()
+        self.sprite_box.currentIndexChanged.connect(self._fill_attachments)
+        ll.addWidget(self.sprite_box)
+        self.sprite_list = QtWidgets.QListWidget()
+        self.sprite_list.itemChanged.connect(self._sprite_checked)
+        ll.addWidget(self.sprite_list, 2)
+        ll.addWidget(QtWidgets.QLabel("Runs in the game (once, whenever a level plays):"))
+        self.game_list = QtWidgets.QListWidget()
+        self.game_list.itemChanged.connect(self._game_checked)
+        ll.addWidget(self.game_list, 2)
+        split.addWidget(left)
+        right = QtWidgets.QSplitter(Qt.Vertical)
+        self.editor = CodeEditor()
+        self.editor.textChanged.connect(self._text_changed)
+        right.addWidget(self.editor)
+        self.problems = QtWidgets.QListWidget()
+        self.problems.itemActivated.connect(self._goto_problem)
+        self.problems.itemClicked.connect(self._goto_problem)
+        right.addWidget(self.problems)
+        right.setSizes([480, 120])
+        split.addWidget(right)
+        split.setSizes([240, 740])
+        lay.addWidget(split, 1)
+        self.refresh()
+
+    # ---- the files
+    def _names(self):
+        return [f.name for f in self.studio.project.scripts]
+
+    def refresh(self, keep=None):
+        proj = self.studio.project
+        self._busy = True
+        try:
+            want = keep or self._open
+            self.files.clear()
+            for f in proj.scripts:
+                self.files.addItem(f.name + ".cs")
+            names = self._names()
+            if names:
+                self.files.setCurrentRow(names.index(want) if want in names else 0)
+            self._load(names[self.files.currentRow()] if names else None)
+            self.sprite_box.clear()
+            for sp in proj.sprites:
+                self.sprite_box.addItem(sp.name)
+            if self.studio.sprite is not None and self.studio.sprite in proj.sprites:
+                self.sprite_box.setCurrentIndex(proj.sprites.index(self.studio.sprite))
+        finally:
+            self._busy = False
+        self._fill_attachments()
+        self._show_status()
+
+    def _load(self, name):
+        self._open = name
+        f = self.studio.project.script_file(name) if name else None
+        self.editor.setEnabled(f is not None)
+        self.editor.setPlainText(f.text if f is not None else "")
+        self.editor.mark_errors({})
+
+    def on_changed(self, kind):
+        if kind in ("all", "scripts"):
+            self.refresh()
+        elif kind == "scripttext":
+            classes = sorted(self.studio.project.script_classes())
+            if classes != self._classes:                 # (a class was added or renamed while typing: the attach lists follow)
+                self._fill_attachments()
+        elif kind == "selection" and self.studio.sprite is not None and self.studio.sprite in self.studio.project.sprites:
+            self.sprite_box.setCurrentIndex(self.studio.project.sprites.index(self.studio.sprite))
+
+    def _pick_file(self, row):
+        if self._busy:
+            return
+        names = self._names()
+        if 0 <= row < len(names):
+            self._load(names[row])
+
+    def _text_changed(self):
+        if self._busy or self._open is None:
+            return
+        self.studio.set_script_text(self._open, self.editor.toPlainText())
+        self._show_status()
+
+    def new_script(self, name=None):
+        if name is None:
+            name = ask_text(self, "New script", "Class name:", "MyScript")
+            if not name:
+                return None
+        f = self.studio.add_script(name)
+        self.refresh(keep=f.name)
+        return f
+
+    def delete_script(self):
+        if self._open is not None:
+            self.studio.delete_script(self._open)
+            self._open = None
+            self.refresh()
+
+    # ---- what each sprite and the game run
+    def _fill_attachments(self, *_):
+        proj = self.studio.project
+        classes = sorted(proj.script_classes())
+        self._classes = classes
+        sp = proj.sprites[self.sprite_box.currentIndex()] if 0 <= self.sprite_box.currentIndex() < len(proj.sprites) else None
+        for widget, chosen in ((self.sprite_list, sp.scripts if sp else []), (self.game_list, proj.game_scripts)):
+            widget.blockSignals(True)
+            widget.clear()
+            for c in classes:
+                item = QtWidgets.QListWidgetItem(c)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if c in chosen else Qt.Unchecked)
+                widget.addItem(item)
+            widget.blockSignals(False)
+        self.sprite_list.setEnabled(sp is not None)
+
+    def _sprite_checked(self, item):
+        proj = self.studio.project
+        i = self.sprite_box.currentIndex()
+        if 0 <= i < len(proj.sprites):
+            self.studio.set_sprite_script(proj.sprites[i], item.text(), item.checkState() == Qt.Checked)
+
+    def _game_checked(self, item):
+        self.studio.set_game_script(item.text(), item.checkState() == Qt.Checked)
+
+    # ---- building
+    def signature(self):
+        return [(f.name, f.text) for f in self.studio.project.scripts]
+
+    def _show_status(self):
+        if self._busy_build():
+            return
+        if not self.studio.project.scripts:
+            self.status.setText("no scripts yet")
+        elif self.built == self.signature():
+            self.status.setText("built")
+        else:
+            self.status.setText("changed since the last build" if self.built is not None else "not built yet")
+
+    def _busy_build(self):
+        return self.process is not None
+
+    def build(self, sync=False):
+        """Builds the project's scripts into a new engine library and swaps it in. Asynchronous (the translator takes a while) unless `sync`; returns the result if sync."""
+        if self.process is not None:
+            return None
+        proj = self.studio.project
+        self.problems.clear()
+        self.editor.mark_errors({})
+        sig = self.signature()
+        cmd, lib = self.builder.prepare(proj)
+        if sync:
+            import subprocess
+            r = subprocess.run(cmd, cwd=scriptbuild.ROOT, capture_output=True, text=True)
+            return self._finished(lib, r.returncode, r.stdout + r.stderr, sig)
+        self.process = QtCore.QProcess(self)
+        self.process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
+        self.process.setWorkingDirectory(scriptbuild.ROOT)
+        self.process.finished.connect(lambda code, _st, lib=lib, sig=sig: self._async_done(lib, code, sig))
+        self.build_button.setEnabled(False)
+        self.status.setText("building: translating the engine and the scripts, then linking (about a minute)...")
+        self.studio.message.emit("building the scripts...")
+        self.process.start(cmd[0], cmd[1:])
+        return None
+
+    def _async_done(self, lib, code, sig):
+        proc, self.process = self.process, None
+        out = bytes(proc.readAll()).decode("utf-8", "replace")
+        proc.deleteLater()
+        self.build_button.setEnabled(True)
+        self._finished(lib, code, out, sig)
+
+    def _finished(self, lib, code, output, sig):
+        result = self.builder.finish(lib, code, output)
+        self.last_result = result
+        errors = {}
+        for d in result.diagnostics:
+            item = QtWidgets.QListWidgetItem(str(d))
+            item.setData(Qt.UserRole, (d.script, d.line, d.col))
+            item.setForeground(QtGui.QColor("#f48771" if d.severity == "error" else "#cca700"))
+            self.problems.addItem(item)
+            if d.script == self._open and d.line:
+                errors.setdefault(d.line, d.message)
+        self.editor.mark_errors(errors)
+        if not result.ok:
+            self.status.setText("build failed: %d problem%s" % (len(result.diagnostics), "" if len(result.diagnostics) == 1 else "s"))
+            self.studio.message.emit("build failed")
+            return result
+        ok = self.controller.reload(lib) if self.controller is not None else True
+        if ok:
+            self.built = sig
+            self.builder.forget_old(lib)
+            self.status.setText("built: %d script class%s" % (len(result.scripts), "" if len(result.scripts) == 1 else "es"))
+            self.studio.message.emit("built; the engine was reloaded")
+            if self.problems.count() == 0:
+                self.problems.addItem("no problems")
+        return result
+
+    def _goto_problem(self, item):
+        data = item.data(Qt.UserRole)
+        if not data or not data[0]:
+            return
+        name, line, col = data
+        names = self._names()
+        if name in names:
+            self.files.setCurrentRow(names.index(name))
+            self.editor.goto_line(line, col)
+
+    def closeEvent(self, ev):
+        super().closeEvent(ev)
+
+
 def create_windows(studio):
-    windows = {"palette": PaletteWindow(studio), "sprites": SpriteEditorWindow(studio), "levels": LevelEditorWindow(studio), "effects": EffectsWindow(studio), "lights": LightsWindow(studio)}
+    windows = {"palette": PaletteWindow(studio), "sprites": SpriteEditorWindow(studio), "levels": LevelEditorWindow(studio), "effects": EffectsWindow(studio), "lights": LightsWindow(studio),
+               "sand": SandWindow(studio), "scripts": ScriptsWindow(studio)}
     main = ProjectWindow(studio, windows)
+    windows["sand"].controller = main.viewport
+    windows["scripts"].controller = main.viewport
     return main, windows
 
 
@@ -1797,6 +2221,8 @@ def tile_windows(main, windows):
         windows["levels"].move(x0 + 1120, y0 + 560)
         windows["effects"].move(x0 + 1530, y0 + 30)
         windows["lights"].move(x0 + 1530, y0 + 520)
+        windows["sand"].move(x0 + 1960, y0 + 30)
+        windows["scripts"].move(x0 + 1960, y0 + 520)
         return
     main.move(20, 40)
     windows["palette"].move(460, 40)
@@ -1804,3 +2230,5 @@ def tile_windows(main, windows):
     windows["levels"].move(340, 120)
     windows["effects"].move(640, 200)
     windows["lights"].move(700, 260)
+    windows["sand"].move(760, 320)
+    windows["scripts"].move(120, 80)

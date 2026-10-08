@@ -71,3 +71,19 @@ No GPU was available to measure; those numbers are the CPU rasteriser's.
 * Build needs the EGL/GLES development headers (`apt install libegl-dev libgles-dev`) and a `crust` checkout beside this repository: `python3 build.py gfx`.
 * A program that links it loads `libEGL` and `libGLESv2` at run time, so it cannot be fully static.
 * Linux x86-64 is all that has been built.
+
+## GPU sand: falling sand and water in compute shaders only
+
+`gfx2d_sand.inc` (included by `gfx2d.c`; the API is the "GPU sand" section of `gfx2d.h`) keeps the whole grid in a GL_R32UI texture and steps it with GLES 3.1 compute shaders.
+Nothing is copied to the CPU unless you ask (`gfx_sand_download`, `gfx_sand_count`, `gfx_sand_hash`). A cell is a `uint`: element in bits 0..7 (air, stone, sand, water), shade in bits 8..11.
+
+The rule is a **Margolus 2 x 2 block automaton**: each step cuts the grid into blocks (shifted by one cell on odd steps), and every block is rearranged independently, so a step is race-free and the
+same on every GPU. Columns fall by density (water < sand; stone never moves), diagonals slide, water hops sideways by a hash of (seed, step, block). Integer math only, so the result is exact:
+`tools/gfx_sand_ref.c` is the same rules in C and `python3 build.py sandtest` requires every cell to match after 1..200 steps, over odd sizes, seeds, brush strokes and the drawn colours.
+
+```
+gfx_sand_init(w, h)  gfx_sand_seed(s)  gfx_sand_brush(cx, cy, r, element)  gfx_sand_step(n)  gfx_sand_draw(left, bottom, right, top)
+```
+
+Draw it after `gfx_draw`, in world units. `Samples/GpuSand2D` is the C# use (the same output on .NET and translated to C). On the web (WebGL2 has no compute) `gfx_sand_init` returns 0;
+use the CPU `SandSim` (`Prowl.Runtime/Destruction2D/README.md`), which also makes the sand solid ground. The GPU grid is a visual simulation with no colliders. Difference from `SandSim`: block rules, not per-cell rules, so the two do not produce the same piles.

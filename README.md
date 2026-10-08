@@ -485,7 +485,7 @@ Prowl is [ProwlEngine/Prowl](https://github.com/ProwlEngine/Prowl) (copyright Mi
 pipeline are theirs. Box2D is by Erin Catto. [Crust](https://github.com/brentharts/crust) and the Box2D-Packed additions (`box2d_pack.py`, intrusive execution, the 4-byte handles) are by Brent Hartshorn. Hat tip to
 [Raylib](https://github.com/raysan5/raylib), which shaved hours off Prowl's early development.
 
-The pixel terrain and the shattering of sprites in `Prowl.Runtime/Destruction2D` are ported from [DTerrain](https://github.com/crustos/DTerrain) (Dominik Zimny) and [Unity-2D-Destruction](https://github.com/crustos/Unity-2D-Destruction) (Matthew Holtzem), both MIT.
+The pixel terrain and the shattering of sprites in `Prowl.Runtime/Destruction2D` are ported from [DTerrain](https://github.com/crustos/DTerrain) (Dominik Zimny) and [Unity-2D-Destruction](https://github.com/crustos/Unity-2D-Destruction) (Matthew Holtzem), both MIT. The falling sand and water (`SandSim`) follow the structure of [Falling-sand-in-unity](https://github.com/VladGGDev/Falling-sand-in-unity) (VladGGDev, CC0).
 
 ### Upstream contributors
 

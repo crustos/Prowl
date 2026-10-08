@@ -1,7 +1,5 @@
-# Prowl
-
-![Github top languages](https://img.shields.io/github/languages/top/crustos/Prowl)
-[![GitHub license](https://img.shields.io/github/license/crustos/Prowl?style=flat-square)](LICENSE)
+# Prowl2D
+![editor.gif](editor.gif)
 
 **A Unity-like game engine, now a 2D engine, on [Box2D-Packed](https://github.com/crustos/box2d), whose core is being rewritten in a C# subset that translates to C.**
 

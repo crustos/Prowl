@@ -222,6 +222,53 @@ GFX_API int gfx_font_glyph( int index, int codepoint, GFX_OUT_ARR float *out9 );
 // (and counts it in GFX_STAT_EVENTS_DROPPED). An unknown type or one before gfx_init is refused (0).
 GFX_API int gfx_inject_event( int type, int a, int b, int c, int d );
 
+// ---- GPU sand (desktop only; gfx2d_sand.inc) ---------------------------------------------------------------------------------------------------
+//
+// Falling sand and flowing water that live ONLY on the GPU: a grid of cells in one texture, stepped by a GLES 3.1 compute shader, drawn by a fragment shader
+// that reads the same texture. Nothing is kept on the CPU and nothing is read back unless you ask (download, count, hash: for tests), so a big grid costs
+// the game no CPU time. The price is that it has no colliders: for sand that things can rest on use Prowl.Core2D's PixelTerrain2D.EnableSand (the CPU
+// simulation), which has the same elements and a similar look. There is no compute on WebGL2, so gfx_sand_init returns 0 on a page.
+//
+// A cell is one 32-bit int: the element in bits 0..7 and a shade 0..15 in bits 8..11 (chosen when the grain is made, and it moves with the grain; it only
+// changes the colour). Row 0 is the BOTTOM of the grid and gravity is toward it, as in PixelTerrain2D's bitmap. Elements:
+#define GFX_SAND_AIR 0
+#define GFX_SAND_STONE 1 // never moves; the edge of the grid is stone too
+#define GFX_SAND_SAND 2  // falls into air and water (sinking through water), else slides down a diagonal
+#define GFX_SAND_WATER 3 // falls into air, else slides down a diagonal, else flows sideways over air
+//
+// How a step works (a Margolus neighbourhood, so every cell is owned by exactly one thread and the result needs no atomics and is always the same): the grid
+// is cut into blocks of 2 x 2 cells, the blocks move by one cell in x and y every step, and each thread rearranges the four cells of its block by fixed rules
+// (columns fall, diagonals slide, water hops sideways when a hash of the seed, the step and the block says so). It is exact integer math, so the picture a
+// GPU makes is, cell for cell, the one the C reference in tools/gfx_sand_ref.c makes (python3 tools/gfx_sand_test.py).
+
+// Makes the grid (width x height cells, each up to 4096) empty. Returns 1, or 0 if there is no renderer, no compute shaders, or the grid is too big. A second
+// call replaces the grid.
+GFX_API int gfx_sand_init(int width, int height);
+GFX_API void gfx_sand_free(void);
+
+// Sets the seed of the random choices and starts the step count again from 0 (the same seed, the same cells and the same calls always give the same cells).
+GFX_API void gfx_sand_seed(int seed);
+
+// Puts an element in the cells within `radius` of (cx, cy), on the GPU. GFX_SAND_SAND, _WATER and _STONE only fill air cells; GFX_SAND_AIR clears every cell it
+// reaches (stone too). Cells outside the grid are skipped. Returns 1, or 0 if there is no grid.
+GFX_API int gfx_sand_brush(int cx, int cy, int radius, int element);
+
+// Runs `steps` steps (each a compute dispatch). Returns the number of steps run so far since gfx_sand_seed.
+GFX_API int gfx_sand_step(int steps);
+
+// Draws the grid over the frame so far (after gfx_draw), covering the world rectangle (left, bottom) to (right, top): sand, water and stone are drawn,
+// air is left as it was. One cell is a block of the picture, with nearest sampling, so a grid that fits the frame is drawn pixel for pixel. Returns 1.
+GFX_API int gfx_sand_draw(float left, float bottom, float right, float top);
+
+// Reading and writing every cell (width * height ints, row by row from the BOTTOM row): to load a scene, and to look at one. Both wait for the GPU, so they are for
+// setting up and for tests, not for every frame. Return 1, or 0 if there is no grid.
+GFX_API int gfx_sand_upload(GFX_IN_ARR const int *cells);
+GFX_API int gfx_sand_download(GFX_OUT_ARR int *cells);
+
+// How many cells hold an element, and a hash of every cell (both read the grid back).
+GFX_API int gfx_sand_count(int element);
+GFX_API int gfx_sand_hash(void);
+
 // ---- the window (desktop only; gfx2d_sdl.inc) ------------------------------------------------------------------------------------------------
 //
 // The renderer draws offscreen as always; a window only SHOWS the finished frame. gfx_window_open (after gfx_init) makes an SDL2 window the size of the

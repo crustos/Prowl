@@ -276,6 +276,7 @@ static void ui_effect(int id, const float *params)
 }
 
 static void sync(void); /* defined below; the window needs it to show a finished frame */
+#include "gfx2d_sand.inc" /* GPU sand: a compute shader steps a grid in a texture (gfx_sand_*); shares the context and the camera */
 #include "gfx2d_sdl.inc" /* the desktop window (only with -DGFX_SDL; otherwise stubs): gfx_window_open, gfx_present, and win_poll, which feeds the event queue */
 
 static const GfxUiBackend g_ui = { ui_texture_create, ui_texture_update, ui_texture_free, ui_triangles, ui_clip, win_poll, ui_effect };
@@ -323,6 +324,7 @@ void gfx_shutdown(void)
 {
     if (!g_ready)
         return;
+    gfx_sand_free();
     gfx_window_close();
     gfxui_detach();
     free(g_pixels);

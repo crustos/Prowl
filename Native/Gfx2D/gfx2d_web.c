@@ -73,6 +73,18 @@ void gfx_shutdown(void)
     g_ready = 0;
 }
 
+/* GPU sand needs compute shaders, which WebGL2 does not have: every call says no (gfx_sand_init returns 0). Use the CPU SandSim on the web. */
+int gfx_sand_init(int width, int height) { (void)width; (void)height; return 0; }
+void gfx_sand_free(void) {}
+void gfx_sand_seed(int seed) { (void)seed; }
+int gfx_sand_brush(int cx, int cy, int radius, int element) { (void)cx; (void)cy; (void)radius; (void)element; return 0; }
+int gfx_sand_step(int steps) { (void)steps; return 0; }
+int gfx_sand_draw(float left, float bottom, float right, float top) { (void)left; (void)bottom; (void)right; (void)top; return 0; }
+int gfx_sand_upload(const int *cells) { (void)cells; return 0; }
+int gfx_sand_download(int *cells) { (void)cells; return 0; }
+int gfx_sand_count(int element) { (void)element; return 0; }
+int gfx_sand_hash(void) { return 0; }
+
 void gfx_camera(float centerX, float centerY, float halfHeight, float r, float g, float b)
 {
     g_cx = centerX; g_cy = centerY; g_half = halfHeight; g_bgr = r; g_bgg = g; g_bgb = b;

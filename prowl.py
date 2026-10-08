@@ -2,6 +2,7 @@
 """prowl.py -- the Prowl2D 2D editor (PyQt5). No .NET: the engine is libprowl2d.so (the C# runtime translated to C), called through ctypes.
 
     python3 prowl.py [project.json]        open the editor (a demo project if none is given)
+    python3 prowl.py --demo slime          open Samples/SlimeJumpDestruct as a project and play it in the viewport (the dirt wall is dug, crates burst)
     python3 prowl.py --viewport [...]      also open the engine's SDL2 window on the first level
     python3 prowl.py --export-ascii DIR project.json     no GUI: write the project's sprites and levels as ASCII art / emoji text into DIR
     python3 prowl.py --import-ascii OUT.json [--sprites A.txt ...] [--levels B.txt ...]    no GUI: build a project from ASCII art and emoji levels
@@ -24,10 +25,15 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 
-def load_project(path):
+def load_project(path, demo=None):
     from prowl_editor.model import Project
     from prowl_editor.demo import make_demo_project
-    return Project.load(path) if path else make_demo_project()
+    if path:
+        return Project.load(path)
+    if demo == "slime":
+        from prowl_editor.slime_demo import make_slime_project
+        return make_slime_project()
+    return make_demo_project()
 
 
 def cmd_export_ascii(out_dir, path):
@@ -75,11 +81,11 @@ def make_app(argv):
     return app, gui
 
 
-def cmd_screenshots(out_dir, project_path):
+def cmd_screenshots(out_dir, project_path, demo=None):
     if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app, gui = make_app(sys.argv[:1])
-    studio = gui.Studio(load_project(project_path))
+    studio = gui.Studio(load_project(project_path, demo))
     main, windows = gui.create_windows(studio)
     os.makedirs(out_dir, exist_ok=True)
     shots = [("project", main)] + [(k, w) for k, w in windows.items()]
@@ -102,16 +108,23 @@ def cmd_screenshots(out_dir, project_path):
     return 0
 
 
-def cmd_gui(project_path, open_viewport, quit_after=None):
+def cmd_gui(project_path, open_viewport, quit_after=None, demo=None):
     app, gui = make_app(sys.argv[:1])
-    studio = gui.Studio(load_project(project_path))
+    studio = gui.Studio(load_project(project_path, demo))
     main, windows = gui.create_windows(studio)
     gui.tile_windows(main, windows)
     main.show()
     for w in windows.values():
         w.show()
     from PyQt5 import QtCore
-    if open_viewport:
+    if demo == "slime":                          # show the slime's sprite (and its blinking eyes) and the dirt tile in the editors
+        studio.select_sprite(next(sp for sp in studio.project.sprites if sp.name == "slime"))
+        studio.select_tile(next(k for k, t in studio.project.tiles.items() if t.name == "dirt"))
+    if demo == "slime":                          # SlimeJumpDestruct: the viewport plays it with a stand-in for the sample's bot
+        from prowl_editor.slime_demo import SlimeDriver
+        main.viewport.driver_factory = SlimeDriver
+        main.viewport.autoplay = True
+    if open_viewport or demo == "slime":
         QtCore.QTimer.singleShot(200, main.viewport.open)
     if quit_after:
         QtCore.QTimer.singleShot(int(quit_after * 1000), main.close)
@@ -121,6 +134,7 @@ def cmd_gui(project_path, open_viewport, quit_after=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project", nargs="?", help="a project .json (default: the demo project)")
+    ap.add_argument("--demo", choices=["coins", "slime"], help="open a built-in project: 'slime' is Samples/SlimeJumpDestruct, played in the viewport")
     ap.add_argument("--viewport", action="store_true", help="also open the engine's SDL2 window")
     ap.add_argument("--export-ascii", metavar="DIR", help="no GUI: write sprites/ and levels/ text files of the project into DIR")
     ap.add_argument("--import-ascii", metavar="OUT.json", help="no GUI: build a project from --sprites and --levels text files")
@@ -138,8 +152,8 @@ def main():
         if a.import_ascii:
             return cmd_import_ascii(a.import_ascii, a.sprites, a.levels)
         if a.screenshots:
-            return cmd_screenshots(a.screenshots, a.project)
-        return cmd_gui(a.project, a.viewport, a.quit_after)
+            return cmd_screenshots(a.screenshots, a.project, a.demo)
+        return cmd_gui(a.project, a.viewport, a.quit_after, a.demo)
     except Exception as e:                        # a bad file is a message, not a traceback
         from prowl_editor.model import ProjectError
         if isinstance(e, (ProjectError, OSError)):

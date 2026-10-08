@@ -19,6 +19,8 @@ Commands (the default, with none, is `all`):
               (GAME is a folder of .cs files with a static Main; tools/ccsharp/player_build.py has the details)
     gfx       build the 2D renderer (Native/Gfx2D) for this machine: needs the EGL/GLES headers and ../crust
     so        build libprowl2d.so for the editor (prowl.py): the 2D engine as C plus the SDL2 window, one library for ctypes; [-- -o PATH] (default /tmp/libprowl2d.so)
+    fxtest    the picture effects (Native/Gfx2D/fx): is the generated code current, and does each effect on the GLES renderer give what its C reference does; add --web for
+              WebGL2 and WebGPU too (tools/gfx_fx_test.py; WebGPU needs xvfb-run and mesa-vulkan-drivers)
     webtest   Samples/Draw2D as a native player and as a web page (WebGL2 and WebGPU) run in headless Chromium, and compare the two pictures
     samples   every folder of Samples/ (or the named ones), built as a player and compared with the same game on .NET: samples [NAME..] [--sanitize] [--wasm]
     check3d   does the 3D switch still hold? compiles with and without 3D and compares   (tools/check_physics3d.py)
@@ -249,6 +251,14 @@ def cmd_so(a):
     run([sys.executable, os.path.join(ROOT, "tools", "prowl2d_so.py")] + list(a.rest))
 
 
+def cmd_fxtest(a):
+    """The effects: the generated files must be what the registry makes, then every effect is drawn by the GLES renderer (and with --web by the page's WebGL2 and
+    WebGPU) and compared with the C reference made from the same .fx files."""
+    run([sys.executable, os.path.join(ROOT, "tools", "gfx_fx_gen.py"), "--check"])
+    cmd_gfx(a)
+    run([sys.executable, os.path.join(ROOT, "tools", "gfx_fx_test.py")] + (["--web"] if a.web else []))
+
+
 def cmd_webtest(a):
     """Samples/Draw2D and Samples/DrawScript2D (the same game, with managed scripts: --dna) each as a native player (the reference frame) and as a page, which
     headless Chromium runs and compares with it. Needs node, Playwright with Chromium, and what `gfx` and `player --web` need."""
@@ -344,7 +354,7 @@ def cmd_clean(a):
 
 
 COMMANDS = {"all": cmd_all, "deps": cmd_deps, "native": cmd_native, "managed": cmd_managed, "test": cmd_test, "scan": cmd_scan,
-            "ccsharp": cmd_ccsharp, "gfx": cmd_gfx, "so": cmd_so, "webtest": cmd_webtest, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
+            "ccsharp": cmd_ccsharp, "gfx": cmd_gfx, "so": cmd_so, "fxtest": cmd_fxtest, "webtest": cmd_webtest, "player": cmd_player, "samples": cmd_samples, "check3d": cmd_check3d, "status": cmd_status, "clean": cmd_clean}
 
 
 def main():
@@ -363,7 +373,7 @@ def main():
     ap.add_argument("--sanitize", action="store_true", help="player / samples: also run the translated C under AddressSanitizer and UBSan")
     ap.add_argument("--dotnet", action="store_true", help="player: only run the game on .NET (the reference)")
     ap.add_argument("--dna", action="store_true", help="player: classes outside the C# subset (lambdas, try/catch) run managed on DotNetAnywhere, in the same executable")
-    ap.add_argument("--web", action="store_true", help="player: a page (index.html + wasm + JS) that runs the game in a browser, drawing with WebGL2")
+    ap.add_argument("--web", action="store_true", help="player: a page (index.html + wasm + JS) that runs the game in a browser, drawing with WebGL2; fxtest: also the page backends")
     ap.add_argument("--wasm", action="store_true", help="player: build for WebAssembly (wasm32-wasi) and run it under node")
     ap.add_argument("--3d", dest="three_d", action="store_true", help="also compile the unmaintained 3D physics (default: 2D only)")
     ap.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"], help="build configuration (default Release)")

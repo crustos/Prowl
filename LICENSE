@@ -27,3 +27,8 @@ Third-party code ported into this repository (both MIT, under the same terms as 
 
 - Prowl.Runtime/Destruction2D/PixelTerrain: from DTerrain, Copyright (c) 2020 Dominik Zimny
 - Prowl.Runtime/Destruction2D/Shatter: from Unity-2D-Destruction, Copyright (c) 2016 Matthew Holtzem
+
+Third-party code ported into Native/Gfx2D/fx (BSD 3-Clause, under its own terms, reproduced in Native/Gfx2D/fx/OPENTOONZ-LICENSE.txt):
+
+- the effects blend, hsv_adjust, hls_adjust, levels, levels_rgb and the six gradients: ported from OpenToonz (toonz/sources/stdfx), Copyright (c) 2016 DWANGO Co., Ltd.
+  and contributors. The names of OpenToonz, DWANGO and the contributors are not used to endorse or promote Prowl2D.

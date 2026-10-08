@@ -412,6 +412,10 @@ class TileDialog(QtWidgets.QDialog):
             self.sprite.setCurrentIndex(max(0, self.sprite.findData(tile.sprite)))
         self.solid = QtWidgets.QCheckBox("solid (a collider in the viewport's play mode)")
         self.solid.setChecked(bool(tile and tile.solid))
+        self.dynamic = QtWidgets.QCheckBox("movable (a crate: a dynamic body that blasts push)")
+        self.dynamic.setChecked(bool(tile and tile.dynamic))
+        self.diggable = QtWidgets.QCheckBox("diggable (a blast removes it, like dirt)")
+        self.diggable.setChecked(bool(tile and tile.diggable))
         self.editing = tile
         self.emoji.textChanged.connect(self._emoji_changed)
         self.name.editingFinished.connect(self._name_finished)
@@ -419,6 +423,8 @@ class TileDialog(QtWidgets.QDialog):
         form.addRow("Name", self.name)
         form.addRow("Drawn by", self.sprite)
         form.addRow("", self.solid)
+        form.addRow("", self.dynamic)
+        form.addRow("", self.diggable)
         hint = QtWidgets.QLabel("Type an emoji and its natural name fills in; or type a name such as 'brick' or 'deciduous tree' and leave the emoji empty.")
         hint.setWordWrap(True)
         form.addRow(hint)
@@ -453,7 +459,8 @@ class TileDialog(QtWidgets.QDialog):
         if g[0] in self.project.tiles and not (self.editing and self.editing.emoji == g[0]):
             QtWidgets.QMessageBox.warning(self, "Tile", "%s is already a tile (%s)." % (g[0], self.project.tiles[g[0]].name))
             return
-        self.result_values = (g[0], self.name.text().strip() or natural_name(g[0]), self.sprite.currentData() or "", self.solid.isChecked())
+        self.result_values = (g[0], self.name.text().strip() or natural_name(g[0]), self.sprite.currentData() or "", self.solid.isChecked(),
+                              self.dynamic.isChecked(), self.diggable.isChecked())
         self.accept()
 
 

@@ -270,5 +270,24 @@ class JsonProject(unittest.TestCase):
         self.assertEqual(len(s.frames), 1)                    # the last frame stays
 
 
+class SlimeProject(unittest.TestCase):
+    def test_the_sample_level_becomes_a_project_that_round_trips(self):
+        from .slime_demo import make_slime_project
+        from .asciiart import export_level, import_levels
+        p = make_slime_project()
+        lv = p.levels[0]
+        self.assertEqual((lv.width, lv.height), (64, 20))
+        self.assertEqual(lv.cells.count("\U0001f7eb"), 18)               # the dirt wall: 2 x 9 cells
+        self.assertEqual(lv.cells.count("\U0001f4e6"), 4)                # four crates
+        self.assertTrue(p.tiles["\U0001f4e6"].dynamic and p.tiles["\U0001f7eb"].diggable)
+        p2 = Project.from_json(p.to_json())
+        self.assertEqual(p2.levels[0].cells, lv.cells)
+        self.assertTrue(p2.tiles["\U0001f7eb"].diggable and p2.tiles["\U0001f4e6"].dynamic)
+        q = Project("again")                                                # the emoji text keeps the traits too
+        import_levels(export_level(lv, p), q)
+        self.assertTrue(q.tiles["\U0001f7eb"].diggable and q.tiles["\U0001f7eb"].solid and q.tiles["\U0001f4e6"].dynamic)
+        self.assertEqual(q.levels[0].cells, lv.cells)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -297,11 +297,13 @@ def slug(name):
 
 
 class TileDef:
-    def __init__(self, emoji, name, sprite="", solid=False):
+    def __init__(self, emoji, name, sprite="", solid=False, dynamic=False, diggable=False):
         self.emoji = emoji
         self.name = name         # natural, e.g. 'brick' or 'deciduous tree'
         self.sprite = sprite     # a sprite's name; "" means: the sprite with this tile's name, if there is one
         self.solid = solid       # the viewport's play mode gives it a collider
+        self.dynamic = dynamic   # ...a movable body (a crate) instead of part of the static ground; implies a collider
+        self.diggable = diggable  # a blast removes it (dirt); the viewport's play mode only
 
     def to_json(self):
         d = {"emoji": self.emoji, "name": self.name}
@@ -309,6 +311,10 @@ class TileDef:
             d["sprite"] = self.sprite
         if self.solid:
             d["solid"] = True
+        if self.dynamic:
+            d["dynamic"] = True
+        if self.diggable:
+            d["diggable"] = True
         return d
 
 
@@ -480,7 +486,8 @@ class Project:
         for n, item in enumerate(data.get("tiles", [])):
             if not isinstance(item, dict) or "emoji" not in item or "name" not in item:
                 raise ProjectError("tiles[%d]: expected {emoji, name}" % n)
-            p.tiles[item["emoji"]] = TileDef(item["emoji"], item["name"], item.get("sprite", ""), bool(item.get("solid", False)))
+            p.tiles[item["emoji"]] = TileDef(item["emoji"], item["name"], item.get("sprite", ""), bool(item.get("solid", False)),
+                                          bool(item.get("dynamic", False)), bool(item.get("diggable", False)))
         for n, item in enumerate(data.get("levels", [])):
             where = "levels[%d]" % n
             if not isinstance(item, dict) or "rows" not in item or not isinstance(item["rows"], list) or not item["rows"]:

@@ -309,9 +309,12 @@ def parse_level_text(text, default_name="level"):
             sm = re.search(r"\s*->\s*(.+)$", name)
             if sm:
                 sprite, name = sm.group(1).strip(), name[:sm.start()]
-            if re.search(r"\(solid\)\s*$", name):
-                solid, name = True, re.sub(r"\s*\(solid\)\s*$", "", name)
-            cur.legend[g[0]] = (name.strip() or natural_name(g[0]), sprite, solid)
+            traits = ()
+            tm = re.search(r"\s*\(((?:solid|dynamic|diggable)(?:\s*,\s*(?:solid|dynamic|diggable))*)\)\s*$", name)
+            if tm:
+                traits = tuple(t.strip() for t in tm.group(1).split(","))
+                name = name[:tm.start()]
+            cur.legend[g[0]] = (name.strip() or natural_name(g[0]), sprite, traits)
             continue
         # (any other line is a row of the level, even one that starts with '#': an ASCII level may use '#' for walls)
         if line == "":
@@ -346,8 +349,8 @@ def import_levels(text, project, default_name="level"):
                 if g == empty or g in _BLANKS:
                     continue
                 if g not in project.tiles:
-                    name, sprite, solid = b.legend.get(g, (natural_name(g), "", False))
-                    project.tiles[g] = TileDef(g, name, sprite, solid)
+                    name, sprite, traits = b.legend.get(g, (natural_name(g), "", ()))
+                    project.tiles[g] = TileDef(g, name, sprite, "solid" in traits, "dynamic" in traits, "diggable" in traits)
                     new_tiles.append(project.tiles[g])
                 lv.cells[y * width + x] = g
         if empty and empty not in (project.empty,) and not project.levels:
@@ -365,7 +368,8 @@ def export_level(level, project):
         if t is None:
             lines.append("# %s = %s" % (g, natural_name(g)))
             continue
-        extra = (" (solid)" if t.solid else "") + (" -> %s" % t.sprite if t.sprite else "")
+        traits = [w for w, on in (("solid", t.solid), ("dynamic", t.dynamic), ("diggable", t.diggable)) if on]
+        extra = (" (%s)" % ", ".join(traits) if traits else "") + (" -> %s" % t.sprite if t.sprite else "")
         lines.append("# %s = %s%s" % (g, t.name, extra))
     for y in range(level.height):
         lines.append("".join(level.get(x, y) or empty for x in range(level.width)))

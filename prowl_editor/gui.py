@@ -184,15 +184,15 @@ class Studio(QtCore.QObject):
         self.edited("structure")
 
     # ---- tiles
-    def add_tile(self, emoji, name, sprite, solid):
-        self.project.tiles[emoji] = TileDef(emoji, name, sprite, solid)
+    def add_tile(self, emoji, name, sprite, solid, dynamic=False, diggable=False):
+        self.project.tiles[emoji] = TileDef(emoji, name, sprite, solid, dynamic, diggable)
         self.tile = emoji
         self.edited("structure")
 
-    def edit_tile(self, old, emoji, name, sprite, solid):
+    def edit_tile(self, old, emoji, name, sprite, solid, dynamic=False, diggable=False):
         tiles = {}
         for k, t in self.project.tiles.items():          # keep the tile's place in the tile list
-            tiles[emoji if k == old else k] = TileDef(emoji, name, sprite, solid) if k == old else t
+            tiles[emoji if k == old else k] = TileDef(emoji, name, sprite, solid, dynamic, diggable) if k == old else t
         self.project.tiles = tiles
         if emoji != old:
             for lv in self.project.levels:
@@ -748,11 +748,15 @@ class LevelEditorWindow(Floating):
             top.addWidget(r)
         top.addWidget(QtWidgets.QLabel("Cell"))
         self.zoom = QtWidgets.QSlider(Qt.Horizontal)
-        self.zoom.setRange(12, 72)
+        self.zoom.setRange(6, 72)
         self.zoom.setValue(32)
         self.zoom.setFixedWidth(90)
         self.zoom.valueChanged.connect(self._zoom)
         top.addWidget(self.zoom)
+        fit = QtWidgets.QPushButton("Fit")
+        fit.setToolTip("choose the cell size at which the whole level shows")
+        fit.clicked.connect(self.fit_zoom)
+        top.addWidget(fit)
         top.addStretch(1)
         vb = QtWidgets.QPushButton("Open viewport (SDL)")
         vb.clicked.connect(studio.viewport_requested.emit)
@@ -790,6 +794,8 @@ class LevelEditorWindow(Floating):
         self.canvas.edited.connect(lambda: studio.edited("level"))
         self.canvas.picked.connect(self._picked)
         scroll = QtWidgets.QScrollArea()
+        self.scroll = scroll
+        self.fitted = None                           # the level the cell size was last fitted to
         scroll.setWidget(self.canvas)
         scroll.setAlignment(Qt.AlignCenter)
         mid.addWidget(scroll, 1)
@@ -833,6 +839,17 @@ class LevelEditorWindow(Floating):
         self.canvas.fit_size()
         self.refresh_tiles()
         self.refresh_text()
+        if lv is not None and lv is not self.fitted:        # a level that is new here: show all of it
+            self.fitted = lv
+            QtCore.QTimer.singleShot(0, self.fit_zoom)
+
+    def fit_zoom(self):
+        lv = self.studio.level
+        if lv is None:
+            return
+        area = self.scroll.viewport().size()
+        cell = int(min((area.width() - 4) / float(lv.width), (area.height() - 4) / float(lv.height)))
+        self.zoom.setValue(max(self.zoom.minimum(), min(self.zoom.maximum(), cell)))
 
     def refresh_tiles(self):
         proj = self.studio.project
@@ -840,7 +857,7 @@ class LevelEditorWindow(Floating):
         self.tiles.clear()
         for e, t in proj.tiles.items():
             spr = proj.sprite_for_tile(t)
-            it = QtWidgets.QListWidgetItem("%s  %s%s" % (e, t.name, "  (solid)" if t.solid else ""))
+            it = QtWidgets.QListWidgetItem("%s  %s%s" % (e, t.name, "  (%s)" % ", ".join(w for w, on in (("solid", t.solid), ("dynamic", t.dynamic), ("diggable", t.diggable)) if on) if (t.solid or t.dynamic or t.diggable) else ""))
             it.setData(Qt.UserRole, e)
             it.setFont(emoji_font(16))
             if spr is not None:
@@ -972,6 +989,9 @@ class ViewportController(QtCore.QObject):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
         studio.changed.connect(self._changed)
+        self.driver_factory = None       # a callable making the object that plays the level in the viewport (slime_demo.SlimeDriver)
+        self.autoplay = False            # start in play mode as soon as the window is open
+        self.window_pos = None           # (x, y) where the SDL window opens, or None to let the system place it
 
     def open(self):
         try:
@@ -981,9 +1001,15 @@ class ViewportController(QtCore.QObject):
                 self.vp = Viewport(self.engine, self.studio.project, 800, 480)
             if self.vp.is_open:
                 return True
+            if self.window_pos:
+                os.environ["PROWL_WINDOW_POS"] = "%d,%d" % self.window_pos
             self.vp.project = self.studio.project
             self.vp.show_level(self.studio.level)
             self.vp.open()
+            if self.driver_factory is not None:
+                self.vp.driver = self.driver_factory()
+            if self.autoplay and not self.vp.playing:
+                self.vp.toggle_play()
         except EngineError as e:
             QtWidgets.QMessageBox.warning(self.parent_widget, "Viewport", str(e))
             return False
@@ -1268,7 +1294,21 @@ def create_windows(studio):
 
 
 def tile_windows(main, windows):
-    """A first arrangement: the project window at the top left, the editors where they do not cover each other. They are free windows: move them."""
+    """A first arrangement of the free windows (move them as you like). On a big screen (2500 px wide or more) nothing overlaps: the project and palette windows and the
+    engine's window along the top, the sprite and level editors below; on a smaller one they overlap, as windows do."""
+    g = QtWidgets.QApplication.primaryScreen().availableGeometry()
+    x0, y0 = g.x(), g.y()
+    if g.width() >= 2500 and g.height() >= 1120:
+        main.resize(420, 470)
+        main.move(x0 + 10, y0 + 30)
+        windows["palette"].resize(382, 470)
+        windows["palette"].move(x0 + 440, y0 + 30)
+        main.viewport.window_pos = (x0 + 832, y0 + 30)
+        windows["sprites"].resize(1097, 560)
+        windows["sprites"].move(x0 + 10, y0 + 560)
+        windows["levels"].resize(1425, 560)
+        windows["levels"].move(x0 + 1120, y0 + 560)
+        return
     main.move(20, 40)
     windows["palette"].move(460, 40)
     windows["sprites"].move(20, 300)

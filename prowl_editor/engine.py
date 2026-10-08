@@ -9,11 +9,13 @@ ctypes; nothing here needs .NET.
 One Engine per process (the C runtime has one scene and one renderer), driven from ONE thread: the Qt main thread, from a timer, as prowl.py does it.
 """
 import array
+import math
+import random
 import ctypes as C
 import os
 import time
 
-ABI_VERSION = 1
+ABI_VERSION = 4
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_HERE)
 
@@ -46,6 +48,8 @@ P2D = {
     "p2d_destroy_node": (None, [_i]), "p2d_clear": (None, []),
     "p2d_add_sprite": (_i, [_i, _i, _f, _f, _f, _f, _f]), "p2d_add_body": (_i, [_i, _i]),
     "p2d_add_box": (_i, [_i, _f, _f]), "p2d_add_circle": (_i, [_i, _f]), "p2d_gravity": (None, [_f, _f]),
+    "p2d_set_velocity": (None, [_i, _f, _f]), "p2d_impulse": (None, [_i, _f, _f]), "p2d_velocity_x": (_f, [_i]), "p2d_velocity_y": (_f, [_i]),
+    "p2d_add_body_ex": (_i, [_i, _i, _i, _f]), "p2d_add_box_ex": (_i, [_i, _f, _f, _f]), "p2d_blast": (_i, [_f, _f, _f, _f]),
     "p2d_step": (None, [_f]), "p2d_draw": (_i, []),
 }
 GFX = {
@@ -140,6 +144,10 @@ class Viewport:
         self.cx, self.cy, self.half = 0.0, 0.0, 6.0     # the camera: centre in world units and half the visible height
         self.playing = False
         self.balls = []                                  # engine node indexes
+        self.cells = None                                # in play mode: a copy of the level's cells that blasts may dig into
+        self.statics = []                                # the static boxes made from the solid cells
+        self.actors = []                                 # movable tiles (crates) and debris: dicts with node, tile, w, h, ttl
+        self.driver = None                               # something with step(dt) and the viewport's play mode, e.g. slime_demo.SlimeDriver
         self.clock = 0.0
         self._last = None
         self._acc = 0.0
@@ -225,36 +233,107 @@ class Viewport:
             return
         e.p2d_clear()
         e.p2d_gravity(0.0, -18.0)
-        made = skipped = 0
-        solid = {k for k, t in self.project.tiles.items() if t.solid}
-        for y in range(lv.height):                        # a run of solid cells in a row is ONE box: the scene holds 256 nodes
+        self.cells = list(lv.cells)
+        self.statics, self.actors, self.balls = [], [], []
+        self._skipped = 0
+        solid = {k for k, t in self.project.tiles.items() if t.dynamic}
+        for y in range(lv.height):                        # movable tiles (crates) are bodies of their own
+            for x in range(lv.width):
+                g_ = self.cells[y * lv.width + x]
+                if g_ in solid:
+                    node = e.p2d_new_node()
+                    if node < 0:
+                        self._skipped += 1
+                        continue
+                    e.p2d_set_pos(node, x + 0.5, lv.height - y - 0.5)
+                    e.p2d_add_body(node, BODY_DYNAMIC)
+                    e.p2d_add_box(node, 1.0, 1.0)
+                    self.actors.append({"node": node, "tile": g_, "w": 1.0, "h": 1.0, "ttl": None, "cell": (x, y)})
+        self._build_statics()
+        self.playing = True
+        self._acc = 0.0
+        if self.driver is not None:
+            self.driver.start(self)
+        self.status = "play: %d solid blocks%s - click drops a ball, B blasts at the pointer" % (
+            len(self.statics), (", %d beyond the engine's limit skipped" % self._skipped) if self._skipped else "")
+
+    def _build_statics(self):
+        """The solid cells as static boxes: a run of them in a row is ONE box (the scene holds 256 nodes). Called again after a blast has dug cells out."""
+        lv, e = self.level, self.engine.lib
+        for node in self.statics:
+            e.p2d_destroy_node(node)
+        self.statics = []
+        solid = {k for k, t in self.project.tiles.items() if t.solid and not t.dynamic}
+        for y in range(lv.height):
             x = 0
             while x < lv.width:
-                if lv.get(x, y) in solid:
+                if self.cells[y * lv.width + x] in solid:
                     x0 = x
-                    while x < lv.width and lv.get(x, y) in solid:
+                    while x < lv.width and self.cells[y * lv.width + x] in solid:
                         x += 1
                     node = e.p2d_new_node()
                     if node < 0:
-                        skipped += 1
+                        self._skipped += 1
                         continue
                     w = x - x0
                     e.p2d_set_pos(node, x0 + w / 2.0, lv.height - y - 0.5)
                     e.p2d_add_body(node, BODY_STATIC)
                     e.p2d_add_box(node, float(w), 1.0)
-                    made += 1
+                    self.statics.append(node)
                 else:
                     x += 1
-        self.balls = []
-        self.playing = True
-        self._acc = 0.0
-        self.status = "play: %d solid blocks%s - click to drop a ball" % (made, (", %d beyond the engine's limit skipped" % skipped) if skipped else "")
 
     def _stop_play(self):
         if self.playing and self.engine.started:
             self.engine.lib.p2d_clear()
+        if self.playing and self.driver is not None:
+            self.driver.stop()
         self.playing = False
-        self.balls = []
+        self.balls, self.statics, self.actors, self.cells = [], [], [], None
+
+    def blast(self, wx, wy, radius=3.5, force=60.0, dig=None):
+        """An explosion in play mode: pushes the bodies near (the engine's AddExplosionForce) and digs the diggable cells within the radius.
+        Returns (bodies pushed, cells dug)."""
+        lv, e = self.level, self.engine.lib
+        if not self.playing or lv is None:
+            return 0, 0
+        pushed = e.p2d_blast(wx, wy, radius, force)
+        dig = radius if dig is None else dig
+        diggable = {k for k, t in self.project.tiles.items() if t.diggable}
+        dug = 0
+        for y in range(lv.height):
+            for x in range(lv.width):
+                if self.cells[y * lv.width + x] in diggable:
+                    dx, dy = x + 0.5 - wx, lv.height - y - 0.5 - wy
+                    if dx * dx + dy * dy <= dig * dig:
+                        self.cells[y * lv.width + x] = ""
+                        dug += 1
+        if dug:
+            self._build_statics()
+        return pushed, dug
+
+    def shatter(self, actor, pieces=7, speed=4.0):
+        """Breaks a movable tile into small bodies that fly outward and expire after 2.5 seconds (the sample does it with Shatter2D's Voronoi fragments)."""
+        e = self.engine.lib
+        x, y = e.p2d_node_x(actor["node"]), e.p2d_node_y(actor["node"])
+        e.p2d_destroy_node(actor["node"])
+        self.actors.remove(actor)
+        if actor.get("cell"):
+            self.cells[actor["cell"][1] * self.level.width + actor["cell"][0]] = ""
+        rng = random.Random(int(x * 100) + int(y * 10))
+        for _ in range(pieces):
+            node = e.p2d_new_node()
+            if node < 0:
+                break
+            size = rng.uniform(0.22, 0.4)
+            ox, oy = rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3)
+            e.p2d_set_pos(node, x + ox, y + oy)
+            e.p2d_set_angle(node, rng.uniform(0, 3.14))
+            e.p2d_add_body(node, BODY_DYNAMIC)
+            e.p2d_add_box(node, size, size)
+            e.p2d_set_velocity(node, ox * speed * 2 + rng.uniform(-1, 1), oy * speed * 2 + rng.uniform(1, 4))
+            self.actors.append({"node": node, "tile": None, "w": size, "h": size, "ttl": 2.5,
+                                "color": (0.85 - rng.uniform(0, 0.15), 0.6 - rng.uniform(0, 0.15), 0.35)})
 
     def toggle_play(self):
         if self.playing:
@@ -304,6 +383,8 @@ class Viewport:
                 step = self.half * 0.1
                 if a == ord("P"):
                     self.toggle_play()
+                elif a == ord("B") and self.playing:
+                    self.blast(*self.screen_to_world(*self.mouse))
                 elif a == ord("R") and self.playing:
                     self._start_play()
                 elif a == KEY_HOME:
@@ -337,7 +418,14 @@ class Viewport:
             self._acc += dt
             n = 0
             while self._acc >= 1 / 60.0 and n < 4:
+                if self.driver is not None:
+                    self.driver.step(1 / 60.0)
                 e.p2d_step(1 / 60.0)
+                for a in [a for a in self.actors if a["ttl"] is not None]:
+                    a["ttl"] -= 1 / 60.0
+                    if a["ttl"] <= 0:
+                        e.p2d_destroy_node(a["node"])
+                        self.actors.remove(a)
                 self._acc -= 1 / 60.0
                 n += 1
         self._draw()
@@ -359,10 +447,12 @@ class Viewport:
             y0 = max(0, int(lv.height - (self.cy + self.half)) - 1)
             y1 = min(lv.height, int(lv.height - (self.cy - self.half)) + 2)
             sprite_cache = {}
+            cells = self.cells if self.playing else lv.cells
+            hidden = {a["cell"] for a in self.actors if a.get("cell")} if self.playing else ()
             for y in range(y0, y1):
                 for x in range(x0, x1):
-                    g_ = lv.cells[y * lv.width + x]
-                    if not g_:
+                    g_ = cells[y * lv.width + x]
+                    if not g_ or (x, y) in hidden:
                         continue
                     tile = proj.tiles.get(g_)
                     spr = None
@@ -385,6 +475,27 @@ class Viewport:
                         flat.extend((cx, cy, 0.5, 0.5, 0.0, pr, pg, pb, 1.0, 0, 1, 0))      # layer 1: over the frame
             # a faint frame around the level (layer 0, under the tiles), so its edge shows against the background
             flat.extend((lv.width / 2.0, lv.height / 2.0, lv.width / 2.0 + 0.06, lv.height / 2.0 + 0.06, 0.0, 0.2, 0.22, 0.3, 1.0, 0, 0, 0))
+        if self.playing:
+            for a in self.actors:
+                nx, ny, ang = self.engine.lib.p2d_node_x(a["node"]), self.engine.lib.p2d_node_y(a["node"]) + a.get("dy", 0.0), self.engine.lib.p2d_node_angle(a["node"])
+                spr = proj.sprite_for_tile(proj.tiles[a["tile"]]) if a.get("tile") in proj.tiles else None
+                tex = 0
+                if spr is not None:
+                    frame = int(self.clock * spr.fps) % len(spr.frames) if len(spr.frames) > 1 and spr.fps > 0 else 0
+                    if a.get("frame") is not None:
+                        frame = a["frame"] % len(spr.frames)
+                    tex = self._texture(spr, frame)
+                if tex:
+                    hw, hh = a["w"] / 2.0 * a.get("flip", 1.0), a["h"] / 2.0
+                    ca, sa = math.cos(ang), math.sin(ang)
+                    pts = [(nx + ca * px - sa * py, ny + sa * px + ca * py) for px, py in ((-hw, hh), (hw, hh), (hw, -hh), (-hw, -hh))]
+                    uv = ((0, 0), (1, 0), (1, 1), (0, 1))
+                    v = quads.setdefault(tex, array.array("f"))
+                    for i in (0, 1, 2, 0, 2, 3):
+                        v.extend((pts[i][0], pts[i][1], uv[i][0], uv[i][1], 1, 1, 1, 1))
+                else:
+                    r, g, b = a.get("color", (0.8, 0.55, 0.3))
+                    flat.extend((nx, ny, a["w"] / 2.0, a["h"] / 2.0, ang, r, g, b, a.get("alpha", 1.0), a.get("shape", 0), a.get("layer", 2), 0))
         for node in self.balls:
             flat.extend((self.engine.lib.p2d_node_x(node), self.engine.lib.p2d_node_y(node), 0.35, 0.35, 0.0, 1.0, 0.55, 0.2, 1.0, 1, 5, 0))
         n = len(flat) // 12

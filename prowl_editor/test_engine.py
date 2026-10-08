@@ -7,6 +7,7 @@ import os
 import unittest
 
 from .demo import make_demo_project
+from .slime_demo import SlimeDriver, make_slime_project
 from .engine import (BODY_DYNAMIC, BODY_STATIC, BTN_LEFT, EV_MOUSE_DOWN, EV_WHEEL, KEY_HOME, Engine, EngineError, Viewport, find_library)
 
 W, H = 800, 480           # the renderer's picture is made once per process, at the size it is first started with
@@ -39,7 +40,7 @@ class EngineApi(unittest.TestCase):
         self.e.p2d_clear()
 
     def test_version_and_the_exports_the_header_promises(self):
-        self.assertEqual(self.e.p2d_version(), 1)
+        self.assertEqual(self.e.p2d_version(), 4)
         header = os.path.join(os.path.dirname(_engine.path), "libprowl2d.h")
         if os.path.exists(header):
             import re
@@ -68,6 +69,29 @@ class EngineApi(unittest.TestCase):
             e.p2d_step(1 / 60.0)
         self.assertAlmostEqual(e.p2d_node_y(ball), 0.5, delta=0.02)    # at rest on the box's top (y = 0), radius 0.5
         self.assertAlmostEqual(e.p2d_node_x(ball), 0.0, delta=0.01)
+
+    def test_velocity_impulse_and_blast_move_bodies(self):
+        e = self.e
+        e.p2d_gravity(0.0, 0.0)
+        a = e.p2d_new_node()
+        e.p2d_set_pos(a, 0.0, 0.0)
+        e.p2d_add_body(a, BODY_DYNAMIC)
+        e.p2d_add_box(a, 1.0, 1.0)
+        e.p2d_set_velocity(a, 3.0, 0.0)
+        e.p2d_step(1 / 60.0)
+        self.assertAlmostEqual(e.p2d_velocity_x(a), 3.0, delta=0.05)
+        e.p2d_set_velocity(a, 0.0, 0.0)
+        e.p2d_impulse(a, 0.0, 5.0)
+        e.p2d_step(1 / 60.0)
+        self.assertGreater(e.p2d_velocity_y(a), 0.5)
+        e.p2d_set_velocity(a, 0.0, 0.0)
+        e.p2d_set_pos(a, 1.0, 0.0)
+        e.p2d_step(1 / 60.0)
+        self.assertEqual(e.p2d_blast(0.0, 0.0, 3.0, 60.0), 1)
+        e.p2d_step(1 / 60.0)
+        self.assertGreater(e.p2d_velocity_x(a), 0.0)                       # pushed away from the blast
+        self.assertEqual(e.p2d_velocity_x(-1), 0.0)
+        e.p2d_set_velocity(300, 1.0, 1.0)                                  # harmless
 
     def test_clear_and_the_node_limit(self):
         e = self.e
@@ -194,6 +218,36 @@ class ViewportWindow(unittest.TestCase):
         self.lib.gfx_inject_event(9, 0, 0, 0, 0)                                # GFX_EVENT_CLOSE, as the window's close button sends it
         self.assertFalse(self.vp.tick(0.0))
         self.assertTrue(self.vp.closed)
+
+
+@unittest.skipUnless(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"), "needs a display (run under xvfb-run)")
+class SlimeJumpDestructInTheViewport(unittest.TestCase):
+    def test_the_slime_digs_through_the_dirt_bursts_the_crates_and_reaches_the_goal(self):
+        project = make_slime_project()
+        vp = Viewport(_engine, project, W, H)
+        vp.show_level(project.levels[0])
+        vp.driver = SlimeDriver()
+        try:
+            vp.open()
+        except EngineError as e:
+            self.skipTest(str(e))
+        try:
+            vp.toggle_play()
+            lv = vp.level
+            dirt_before = sum(1 for c in vp.cells if c == "\U0001f7eb")
+            crates_before = sum(1 for a in vp.actors if a.get("tile") == "\U0001f4e6")
+            self.assertEqual((dirt_before, crates_before), (18, 4))
+            for _ in range(60 * 30):
+                if not vp.tick(1 / 60.0) or vp.driver.done:
+                    break
+            d = vp.driver
+            self.assertTrue(d.won, d.log)
+            self.assertEqual(len([l for l in d.log if l.startswith("boom")]), 4)       # all four crates went off
+            self.assertLess(sum(1 for c in vp.cells if c == "\U0001f7eb"), dirt_before)   # the dirt was dug
+            self.assertEqual(lv.cells.count("\U0001f7eb"), 18)                         # ...in the play copy only: the level is as it was
+            self.assertFalse(project.dirty)                                            # and playing (the blinking eyes) is not an edit
+        finally:
+            vp.close()
 
 
 if __name__ == "__main__":

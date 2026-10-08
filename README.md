@@ -1,6 +1,10 @@
 # Prowl2D
 ![editor.gif](editor.gif)
 
+![SlimeJumpDestructSand: the slime digs down a ruined brick building; sand pours, water drains, boulders and crates burst](Samples/SlimeJumpDestructSand/slimejumpdestructsand.gif)
+
+*[Samples/SlimeJumpDestructSand](Samples/SlimeJumpDestructSand): a shaft down an old building, with falling sand, flowing water and destructible rock (Shatter2D). Headless: the same source runs on .NET and as a native C player with identical output.*
+
 **A Unity-like game engine, now a 2D engine, on [Box2D-Packed](https://github.com/crustos/box2d), whose core is being rewritten in a C# subset that translates to C.**
 
 Prowl is an MIT-licensed engine written in C# on .NET 10, with a GameObject/Component model, a full editor, and a Unity-shaped scripting API. This

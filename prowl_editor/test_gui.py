@@ -487,6 +487,33 @@ class Effects(Base):
         self.assertEqual(len(back.levels), len(st.project.levels))
 
 
+class SandWindow_(Base):
+    def test_the_window_edits_the_settings_the_viewport_reads(self):
+        w, st = self.windows["sand"], self.studio.sand
+        self.assertFalse(st.enabled)
+        w.enabled.setChecked(True)
+        w.element_buttons[3].setChecked(True)
+        w.radius.setValue(7)
+        w.speed.setValue(5)
+        w.pause.setChecked(True)
+        self.assertEqual((st.enabled, st.element, st.radius, st.speed, st.paused), (True, 3, 7, 5, True))
+        g = st.generation
+        w.scale.setValue(4)
+        self.assertEqual(st.scale, 4)
+        self.assertGreater(st.generation, g)                                    # a new scale starts the grid again
+
+    def test_the_window_shows_what_the_settings_say_and_a_sand_button_opens_it(self):
+        w, st = self.windows["sand"], self.studio.sand
+        st.enabled, st.element, st.radius = True, 1, 9
+        w.refresh()
+        self.assertTrue(w.enabled.isChecked())
+        self.assertTrue(w.element_buttons[1].isChecked())
+        self.assertEqual(w.radius.value(), 9)
+        w.hide()
+        self.main.show_window("sand")
+        self.assertTrue(w.isVisible())
+
+
 class Lights(Base):
     def test_add_edit_undo_and_the_limit(self):
         from . import lights as L
@@ -578,3 +605,155 @@ class Lights(Base):
         self.assertEqual(back.levels[0].lights[0]["kind"], "spot")
         self.assertEqual(back.levels[0].lighting["exposure"], 2.0)
 
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------------
+# the code editor
+
+MOVER = """using Prowl.Core2D;
+
+[Script, MaxInstances(64)]
+class Teleporter
+{
+    public Component Self;
+
+    public void Update()
+    {
+        Self.Node.SetPosition(-500f, 0f);
+    }
+}
+"""
+
+
+class CodeEditorWindow(Base):
+    def setUp(self):
+        super().setUp()
+        self.win = self.windows["scripts"]
+
+    def test_a_new_script_is_a_template_with_its_class_and_typing_edits_the_project(self):
+        f = self.win.new_script("Spinner")
+        self.assertEqual(self.studio.project.script_classes(), {"Spinner": "Spinner"})
+        self.assertIn("class Spinner", self.win.editor.toPlainText())
+        self.win.editor.setPlainText(MOVER)
+        self.assertEqual(f.text, MOVER)                                             # the project holds what the editor shows
+        self.assertEqual(self.studio.project.script_classes(), {"Teleporter": "Spinner"})
+        self.assertEqual(self.win.status.text(), "not built yet")
+
+    def test_names_do_not_collide(self):
+        self.win.new_script("A")
+        self.win.new_script("A")
+        self.assertEqual([f.name for f in self.studio.project.scripts], ["A", "A2"])
+
+    def test_the_editor_indents_and_tab_inserts_spaces(self):
+        ed = self.win.editor
+        self.win.new_script("T")
+        ed.setPlainText("class T {")
+        c = ed.textCursor()
+        c.movePosition(QtGui.QTextCursor.End)
+        ed.setTextCursor(c)
+        QTest.keyClick(ed, Qt.Key_Return)
+        QTest.keyClick(ed, Qt.Key_Tab)
+        self.assertEqual(ed.toPlainText(), "class T {\n" + " " * 8)                   # one level for the brace, one for the Tab
+        QTest.keyClick(ed, Qt.Key_Backtab)
+        self.assertEqual(ed.toPlainText(), "class T {\n" + " " * 4)
+
+    def test_attaching_is_saved_with_the_project_and_deleting_a_script_detaches_it(self):
+        self.win.new_script("Spinner")
+        self.win.editor.setPlainText(MOVER)
+        sprite = self.studio.project.sprites[0]
+        self.studio.set_sprite_script(sprite, "Teleporter", True)
+        self.studio.set_game_script("Teleporter", True)
+        again = Project.from_json(self.studio.project.to_json())
+        self.assertEqual(again.sprites[0].scripts, ["Teleporter"])
+        self.assertEqual(again.game_scripts, ["Teleporter"])
+        self.assertEqual(again.script_classes(), {"Teleporter": "Spinner"})
+        self.win.delete_script()
+        self.assertEqual((sprite.scripts, self.studio.project.game_scripts), ([], []))
+
+    def test_the_attach_lists_show_and_set_what_is_attached(self):
+        self.win.new_script("Spinner")
+        self.win.editor.setPlainText(MOVER)
+        item = self.win.game_list.item(0)
+        self.assertEqual(item.text(), "Teleporter")
+        item.setCheckState(Qt.Checked)
+        self.assertEqual(self.studio.project.game_scripts, ["Teleporter"])
+        self.win.sprite_list.item(0).setCheckState(Qt.Checked)
+        self.assertEqual(self.studio.project.sprites[self.win.sprite_box.currentIndex()].scripts, ["Teleporter"])
+
+    def test_a_script_outside_the_subset_is_a_problem_at_its_line_and_the_old_engine_stays(self):
+        from .engine import find_library
+        if find_library() is None:
+            self.skipTest("libprowl2d.so is not built (python3 tools/prowl2d_so.py)")
+        self.win.new_script("Bad")
+        self.win.editor.setPlainText("using System;\nusing Prowl.Core2D;\n\n[Script, MaxInstances(2)]\nclass Bad\n{\n    public Component Self;\n"
+                                     "    public void Update()\n    {\n        Func<int, int> f = k => k;\n    }\n}\n")
+        r = self.win.build(sync=True)
+        self.assertFalse(r.ok)
+        lines = [d.line for d in r.diagnostics if d.script == "Bad"]
+        self.assertIn(10, lines)                                                     # the lambda's line
+        self.assertIn(10, self.win.editor.error_lines)
+        self.assertIsNone(self.main.viewport.engine_path)                            # nothing was swapped
+        self.assertEqual(self.win.problems.count(), len(r.diagnostics))
+
+
+class BuildAndReload(Base):
+    """A real build: the script is translated, linked into a new library, swapped in under an open window, and runs on its sprite and in the game."""
+
+    def setUp(self):
+        super().setUp()
+        self.boxes = []
+        self._warning = QtWidgets.QMessageBox.warning
+        QtWidgets.QMessageBox.warning = staticmethod(lambda parent, title, text, *a: self.boxes.append(text))     # (a modal box would wait for a click)
+
+    def tearDown(self):
+        QtWidgets.QMessageBox.warning = self._warning
+        super().tearDown()
+
+    def test_scripts_run_on_sprites_and_in_the_game_after_a_build_and_reload(self):
+        from .engine import EngineError, find_library
+        if find_library() is None:
+            self.skipTest("libprowl2d.so is not built (python3 tools/prowl2d_so.py)")
+        win, vc, proj = self.windows["scripts"], self.main.viewport, self.studio.project
+        win.new_script("Teleporter")
+        win.editor.setPlainText(MOVER)
+        lv = self.studio.level
+        counts = {}
+        for g in lv.cells:
+            t = proj.tiles.get(g)
+            sp = proj.sprite_for_tile(t) if t is not None else None
+            if sp is not None and not t.dynamic:
+                counts[sp.name] = counts.get(sp.name, 0) + 1
+        name = min(counts, key=counts.get)
+        self.studio.set_sprite_script(proj.sprite(name), "Teleporter", True)
+        vc.open()
+        if vc.vp is None or not vc.vp.is_open:
+            self.skipTest("no display for the engine's window: " + "; ".join(self.boxes))
+        old_lib, old_vp = vc.engine.path, vc.vp
+        r = win.build(sync=True)
+        self.assertTrue(r.ok, [str(d) for d in r.diagnostics])
+        self.assertEqual(r.scripts, {"Teleporter": 0})
+        self.assertEqual(vc.engine_path, r.lib)
+        self.assertEqual(vc.engine.path, r.lib)
+        self.assertIsNot(vc.vp, old_vp)                                              # the window was closed and opened again, on the new engine
+        self.assertTrue(vc.vp.is_open)
+        self.assertEqual(vc.engine.script_ids, {"Teleporter": 0})
+        self.assertEqual(win.status.text(), "built: 1 script class")
+        vp, lib = vc.vp, vc.engine.lib
+        vp.toggle_play()
+        self.assertIn("1 script", vp.script_report) if counts[name] == 1 else self.assertIn("scripts running", vp.script_report)
+        for _ in range(5):
+            vp.tick(1 / 60.0)
+        moved = [n for n in range(lib.p2d_node_count() + 8) if abs(lib.p2d_node_x(n) + 500.0) < 0.01]
+        self.assertEqual(len(moved), counts[name])                                   # one per tile that shows the sprite, none else
+        # and in the game: a script on no sprite, attached to the game
+        self.studio.set_sprite_script(proj.sprite(name), "Teleporter", False)
+        self.studio.set_game_script("Teleporter", True)
+        vp.toggle_play()
+        vp.toggle_play()
+        for _ in range(5):
+            vp.tick(1 / 60.0)
+        moved = [n for n in range(lib.p2d_node_count() + 8) if abs(lib.p2d_node_x(n) + 500.0) < 0.01]
+        self.assertEqual(len(moved), 1)
+        # a library built without it says so instead of running nothing silently
+        win.builder.forget_old(r.lib)
+        vc.close()

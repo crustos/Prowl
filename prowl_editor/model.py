@@ -179,6 +179,7 @@ class Sprite:
         self.width = width
         self.height = height
         self.fps = fps
+        self.scripts = []                              # the names of the script classes (Project.scripts) that run on every tile showing this sprite, in play
         self.frames = [bytearray(width * height)]      # a frame: width * height palette indices, row by row from the top; 0 is transparent
 
     def check_size(self, width, height):
@@ -269,8 +270,11 @@ class Sprite:
         return out
 
     def to_json(self, palette):
-        return {"name": self.name, "width": self.width, "height": self.height, "fps": self.fps,
-                "frames": [self.rows(palette, i) for i in range(len(self.frames))]}
+        d = {"name": self.name, "width": self.width, "height": self.height, "fps": self.fps,
+             "frames": [self.rows(palette, i) for i in range(len(self.frames))]}
+        if self.scripts:
+            d["scripts"] = list(self.scripts)
+        return d
 
     @staticmethod
     def from_json(item, palette, where):
@@ -282,6 +286,7 @@ class Sprite:
         height = len(frames[0])
         width = len(frames[0][0]) if isinstance(frames[0][0], str) else 0
         s = Sprite(str(item["name"]), width, height, float(item.get("fps", 8)))
+        s.scripts = [str(n) for n in item.get("scripts", [])]
         s.check_size(width, height)
         s.frames = []
         for n, rows in enumerate(frames):
@@ -413,6 +418,43 @@ def _lights_from_json(item, where):
     return out, lighting
 
 
+SCRIPT_CLASS = re.compile(r"\[\s*Script\b[^\]]*\]\s*(?:\[[^\]]*\]\s*)*(?:(?:public|internal)\s+)?(?:sealed\s+)?class\s+(\w+)")
+
+SCRIPT_TEMPLATE = """using System;
+using Prowl.Core2D;
+
+// A script: C# that runs on a node while the level plays.
+// Keep to the C# subset (no lambdas, try/catch, ...): Build says where a line does not fit.
+// Callbacks: Start, Update, FixedUpdate, LateUpdate, OnEnable, OnDisable,
+//   OnCollisionBegin2D(Collision2D hit), OnCollisionEnd2D(Collision2D hit),
+//   OnTriggerEnter2D(Collider2D other), OnTriggerStay2D, OnTriggerExit2D.
+// Input: Input2D.Key(Input2D.Left), Input2D.Key('A'), Input2D.MouseX, Input2D.MouseDown(0).
+[Script, MaxInstances(16)]
+class %(name)s
+{
+    public Component Self;
+    public float Time;
+
+    public void Update()
+    {
+        Time += 1f / 60f;
+        // Self.Node.SetPosition(Self.Node.WorldX() + 0.02f, Self.Node.WorldY());
+    }
+}
+"""
+
+
+class ScriptFile:
+    """A C# file of the project (written to the build folder as <name>.cs). The classes marked [Script] in it are what sprites and the game attach by name."""
+
+    def __init__(self, name, text=""):
+        self.name = name
+        self.text = text
+
+    def classes(self):
+        return SCRIPT_CLASS.findall(re.sub(r"//[^\n]*", "", self.text))
+
+
 class Project:
     def __init__(self, name="untitled"):
         self.name = name
@@ -420,6 +462,8 @@ class Project:
         self.sprites = []
         self.tiles = {}                 # emoji -> TileDef (insertion order is the tile palette's order)
         self.levels = []
+        self.scripts = []               # ScriptFile: the project's C# (the editor's code editor; Build compiles them into the engine)
+        self.game_scripts = []          # script class names that run once, on a node of the game itself, whenever a level plays
         self.empty = DEFAULT_EMPTY      # what an empty cell is written as when a level is exported as text
         self.path = None                # the file it was loaded from or saved to
         self.dirty = False
@@ -435,6 +479,16 @@ class Project:
         for s in self.sprites:
             if s.name == name:
                 return s
+        return None
+
+    def script_classes(self):
+        """Every [Script] class of the project's files: {class name: file name}."""
+        return {c: f.name for f in self.scripts for c in f.classes()}
+
+    def script_file(self, name):
+        for f in self.scripts:
+            if f.name == name:
+                return f
         return None
 
     def level(self, name):
@@ -513,6 +567,8 @@ class Project:
             "empty": self.empty,
             "tiles": [t.to_json() for t in self.tiles.values()],
             "levels": [self._level_json(l) for l in self.levels],
+            **({"scripts": [{"name": f.name, "text": f.text} for f in self.scripts]} if self.scripts else {}),
+            **({"game_scripts": list(self.game_scripts)} if self.game_scripts else {}),
         }
 
     def _level_json(self, l):
@@ -542,6 +598,11 @@ class Project:
                 raise ProjectError("tiles[%d]: expected {emoji, name}" % n)
             p.tiles[item["emoji"]] = TileDef(item["emoji"], item["name"], item.get("sprite", ""), bool(item.get("solid", False)),
                                           bool(item.get("dynamic", False)), bool(item.get("diggable", False)))
+        for n, item in enumerate(data.get("scripts", [])):
+            if not isinstance(item, dict) or "name" not in item:
+                raise ProjectError("scripts[%d]: expected {name, text}" % n)
+            p.scripts.append(ScriptFile(str(item["name"]), str(item.get("text", ""))))
+        p.game_scripts = [str(n) for n in data.get("game_scripts", [])]
         for n, item in enumerate(data.get("levels", [])):
             where = "levels[%d]" % n
             if not isinstance(item, dict) or "rows" not in item or not isinstance(item["rows"], list) or not item["rows"]:

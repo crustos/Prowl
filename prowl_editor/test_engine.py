@@ -41,7 +41,7 @@ class EngineApi(unittest.TestCase):
         self.e.p2d_clear()
 
     def test_version_and_the_exports_the_header_promises(self):
-        self.assertEqual(self.e.p2d_version(), 4)
+        self.assertEqual(self.e.p2d_version(), 5)
         header = os.path.join(os.path.dirname(_engine.path), "libprowl2d.h")
         if os.path.exists(header):
             import re
@@ -275,6 +275,83 @@ class ViewportWindow(unittest.TestCase):
 
 
 @unittest.skipUnless(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"), "needs a display (run under xvfb-run)")
+class SandInTheViewport(unittest.TestCase):
+    """The GPU sand in the viewport: painted with the mouse, falls, stops at the level's solid tiles, and is drawn."""
+
+    cell_px = ViewportWindow.cell_px
+
+    def setUp(self):
+        self.project = make_demo_project()
+        self.vp = Viewport(_engine, self.project, W, H)
+        self.vp.show_level(self.project.levels[0])
+        try:
+            self.vp.open()
+        except EngineError as e:
+            self.skipTest(str(e))
+        self.lib = _engine.lib
+        if not _engine.has_sand:
+            self.skipTest("this libprowl2d.so has no GPU sand")
+        self.vp.sand.enabled = True
+        self.vp.sand.element = 2
+        self.vp.sand.radius = 3
+        self.vp.fit()
+        self.vp.tick(0.0)
+        if not self.vp.sand.enabled:
+            self.skipTest(self.vp.sand.error)
+
+    def tearDown(self):
+        self.vp.close()
+
+    def paint_at_tile(self, col, row, held=1):
+        from .engine import EV_MOUSE_UP
+        x, y = self.cell_px(col, row)
+        self.lib.gfx_inject_event(EV_MOUSE_DOWN, x, y, BTN_LEFT, 0)
+        for _ in range(held):
+            self.vp.tick(0.0)
+        self.lib.gfx_inject_event(EV_MOUSE_UP, x, y, BTN_LEFT, 0)
+        self.vp.tick(0.0)
+
+    def test_the_stone_of_the_level_is_in_the_grid(self):
+        sand, water, stone = self.vp.sand_counts()
+        solid = {k for k, t in self.project.tiles.items() if t.solid and not t.dynamic}
+        lv = self.vp.level
+        tiles = sum(1 for c in lv.cells if c in solid)
+        self.assertGreater(tiles, 0)
+        self.assertEqual(stone, tiles * self.vp.sand_dims()[2] ** 2)
+        self.assertEqual((sand, water), (0, 0))
+
+    def test_the_mouse_paints_the_chosen_element_and_nothing_is_lost_as_it_falls(self):
+        self.vp.sand.element = 3
+        self.paint_at_tile(8, 1)
+        _, water, _ = self.vp.sand_counts()
+        self.assertGreater(water, 10)
+        for _ in range(120):
+            self.vp.tick(0.0)
+        self.assertEqual(self.vp.sand_counts()[1], water)                      # water falls and spreads; it is not made or lost
+
+    def test_it_is_drawn_and_the_pause_stops_it(self):
+        self.paint_at_tile(8, 1)
+        h = self.lib.gfx_frame_hash()
+        self.vp.tick(0.0)
+        self.assertNotEqual(h, self.lib.gfx_frame_hash())                      # a falling pile changes the picture
+        self.vp.sand.paused = True
+        self.vp.tick(0.0)
+        h = self.lib.gfx_frame_hash()
+        self.vp.tick(0.0)
+        self.assertEqual(h, self.lib.gfx_frame_hash())
+
+    def test_keys_pick_the_element_and_c_clears_the_grid(self):
+        from .engine import EV_KEY_DOWN
+        self.lib.gfx_inject_event(EV_KEY_DOWN, ord("3"), 0, 0, 0)
+        self.vp.tick(0.0)
+        self.assertEqual(self.vp.sand.element, 3)
+        self.paint_at_tile(8, 1)
+        self.assertGreater(self.vp.sand_counts()[1], 0)
+        self.lib.gfx_inject_event(EV_KEY_DOWN, ord("C"), 0, 0, 0)
+        self.vp.tick(0.0)
+        self.assertEqual(self.vp.sand_counts()[1], 0)
+
+
 class SlimeJumpDestructInTheViewport(unittest.TestCase):
     def test_the_slime_digs_through_the_dirt_bursts_the_crates_and_reaches_the_goal(self):
         project = make_slime_project()
